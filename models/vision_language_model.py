@@ -48,7 +48,7 @@ class VisionLanguageModel(nn.Module):
         """
         num_original_visual_tokens = victor_info['num_original_visual_tokens']
         num_registers = victor_info['num_registers']
-        num_images = victor_info['num_images']
+        seq_lengths_before_drop = victor_info['seq_lengths_before_drop']
         
         B, T = targets.size()
         image_token_mask = (input_ids == self.tokenizer.image_token_id)
@@ -63,19 +63,24 @@ class VisionLanguageModel(nn.Module):
                 new_targets_list.append(targets[b])
                 continue
             
+            # Usar o comprimento exato que foi usado após inserir registros e fazer padding
+            seq_len_with_registers = seq_lengths_before_drop[b]
+            
             # Criar máscara para manter apenas registros e texto
-            keep_mask = torch.ones(T + num_images_in_sample * num_registers, dtype=torch.bool, device=targets.device)
+            keep_mask = torch.ones(seq_len_with_registers, dtype=torch.bool, device=targets.device)
             
             current_pos = 0
             for _ in range(num_images_in_sample):
                 # Marcar tokens visuais para remoção
                 visual_start = current_pos
                 visual_end = current_pos + num_original_visual_tokens
+                if visual_end > seq_len_with_registers:
+                    break
                 keep_mask[visual_start:visual_end] = False
                 current_pos += num_original_visual_tokens + num_registers
             
             # Expandir targets para incluir posições de registros
-            expanded_targets = torch.full((T + num_images_in_sample * num_registers,), -100, 
+            expanded_targets = torch.full((seq_len_with_registers,), -100, 
                                          dtype=targets.dtype, device=targets.device)
             
             # Copiar targets originais para posições corretas
@@ -84,7 +89,8 @@ class VisionLanguageModel(nn.Module):
             for img_idx in range(num_images_in_sample):
                 # Tokens visuais
                 visual_len = num_original_visual_tokens
-                expanded_targets[expanded_idx:expanded_idx+visual_len] = targets[b, target_idx:target_idx+visual_len]
+                if target_idx + visual_len <= T and expanded_idx + visual_len <= seq_len_with_registers:
+                    expanded_targets[expanded_idx:expanded_idx+visual_len] = targets[b, target_idx:target_idx+visual_len]
                 expanded_idx += visual_len
                 target_idx += visual_len
                 
@@ -92,15 +98,17 @@ class VisionLanguageModel(nn.Module):
                 expanded_idx += num_registers
             
             # Restante da sequência
-            if target_idx < T:
-                remaining = T - target_idx
-                expanded_targets[expanded_idx:expanded_idx+remaining] = targets[b, target_idx:]
+            if target_idx < T and expanded_idx < seq_len_with_registers:
+                remaining = min(T - target_idx, seq_len_with_registers - expanded_idx)
+                expanded_targets[expanded_idx:expanded_idx+remaining] = targets[b, target_idx:target_idx+remaining]
             
             # Aplicar máscara para remover tokens visuais
             new_targets_list.append(expanded_targets[keep_mask])
         
-        # Pad para mesmo tamanho
+        # Calcular comprimento esperado após drop (baseado nos logits do decoder)
+        # O decoder remove os tokens visuais, então precisamos do mesmo tamanho
         max_len = max(t.size(0) for t in new_targets_list)
+        
         padded_targets = torch.full((B, max_len), -100, dtype=targets.dtype, device=targets.device)
         for b, t in enumerate(new_targets_list):
             padded_targets[b, :t.size(0)] = t
@@ -180,6 +188,9 @@ class VisionLanguageModel(nn.Module):
         # Fazer padding para mesmo tamanho antes de empilhar
         max_len = max(emb.size(0) for emb in new_embd_list)
         
+        # Armazenar comprimentos individuais antes do padding para ajuste de targets
+        seq_lengths = [emb.size(0) for emb in new_embd_list]
+        
         padded_embd_list = []
         padded_mask_list = []
         
@@ -212,7 +223,7 @@ class VisionLanguageModel(nn.Module):
         else:
             attention_mask_new = None
         
-        return token_embd_new, attention_mask_new
+        return token_embd_new, attention_mask_new, seq_lengths
     
     def _replace_img_tokens_with_embd(self, input_ids, token_embd, image_embd):
         """
@@ -263,7 +274,7 @@ class VisionLanguageModel(nn.Module):
                 num_images_per_sample = total_images // input_ids.size(0)
                 
                 # Inserir registros após cada bloco de tokens visuais
-                token_embd, attention_mask = self._insert_visual_registers(
+                token_embd, attention_mask, seq_lengths = self._insert_visual_registers(
                     token_embd, attention_mask, input_ids, num_original_visual_tokens
                 )
                 
@@ -272,6 +283,7 @@ class VisionLanguageModel(nn.Module):
                     'num_original_visual_tokens': num_original_visual_tokens,
                     'num_registers': self.cfg.victor_num_registers,
                     'num_images': num_images_per_sample,
+                    'seq_lengths_before_drop': seq_lengths,  # Comprimentos antes de remover tokens visuais
                 }
 
         logits, _ = self.decoder(token_embd, attention_mask=attention_mask, victor_info=victor_info)
@@ -313,7 +325,7 @@ class VisionLanguageModel(nn.Module):
                 total_images = images_tensor.size(0)
                 num_images_per_sample = total_images // input_ids.size(0)
                 
-                token_embd, attention_mask = self._insert_visual_registers(
+                token_embd, attention_mask, seq_lengths = self._insert_visual_registers(
                     token_embd, attention_mask, input_ids, num_original_visual_tokens
                 )
                 
@@ -322,6 +334,7 @@ class VisionLanguageModel(nn.Module):
                     'num_original_visual_tokens': num_original_visual_tokens,
                     'num_registers': self.cfg.victor_num_registers,
                     'num_images': num_images_per_sample,
+                    'seq_lengths_before_drop': seq_lengths,
                 }
 
         current_total_seq_len = token_embd.size(1)
