@@ -41,6 +41,72 @@ class VisionLanguageModel(nn.Module):
         self.load_backbone = load_backbone
         self.tokenizer = get_tokenizer(cfg.lm_tokenizer, cfg.vlm_extra_tokens, cfg.lm_chat_template)
 
+    def _adjust_targets_for_victor(self, targets, victor_info, input_ids):
+        """
+        Ajusta os targets para corresponder à redução de tokens pelo VICTOR.
+        Remove as posições dos tokens visuais originais, mantendo os registros.
+        """
+        num_original_visual_tokens = victor_info['num_original_visual_tokens']
+        num_registers = victor_info['num_registers']
+        num_images = victor_info['num_images']
+        
+        B, T = targets.size()
+        image_token_mask = (input_ids == self.tokenizer.image_token_id)
+        
+        new_targets_list = []
+        
+        for b in range(B):
+            num_placeholders = image_token_mask[b].sum().item()
+            num_images_in_sample = num_placeholders // num_original_visual_tokens if num_placeholders > 0 else 0
+            
+            if num_images_in_sample == 0:
+                new_targets_list.append(targets[b])
+                continue
+            
+            # Criar máscara para manter apenas registros e texto
+            keep_mask = torch.ones(T + num_images_in_sample * num_registers, dtype=torch.bool, device=targets.device)
+            
+            current_pos = 0
+            for _ in range(num_images_in_sample):
+                # Marcar tokens visuais para remoção
+                visual_start = current_pos
+                visual_end = current_pos + num_original_visual_tokens
+                keep_mask[visual_start:visual_end] = False
+                current_pos += num_original_visual_tokens + num_registers
+            
+            # Expandir targets para incluir posições de registros
+            expanded_targets = torch.full((T + num_images_in_sample * num_registers,), -100, 
+                                         dtype=targets.dtype, device=targets.device)
+            
+            # Copiar targets originais para posições corretas
+            target_idx = 0
+            expanded_idx = 0
+            for img_idx in range(num_images_in_sample):
+                # Tokens visuais
+                visual_len = num_original_visual_tokens
+                expanded_targets[expanded_idx:expanded_idx+visual_len] = targets[b, target_idx:target_idx+visual_len]
+                expanded_idx += visual_len
+                target_idx += visual_len
+                
+                # Registros (sempre -100, não computam loss)
+                expanded_idx += num_registers
+            
+            # Restante da sequência
+            if target_idx < T:
+                remaining = T - target_idx
+                expanded_targets[expanded_idx:expanded_idx+remaining] = targets[b, target_idx:]
+            
+            # Aplicar máscara para remover tokens visuais
+            new_targets_list.append(expanded_targets[keep_mask])
+        
+        # Pad para mesmo tamanho
+        max_len = max(t.size(0) for t in new_targets_list)
+        padded_targets = torch.full((B, max_len), -100, dtype=targets.dtype, device=targets.device)
+        for b, t in enumerate(new_targets_list):
+            padded_targets[b, :t.size(0)] = t
+        
+        return padded_targets
+    
     def _insert_visual_registers(self, token_embd, attention_mask, input_ids, num_visual_tokens):
         """
         Insere registros visuais após cada bloco de tokens visuais na sequência.
@@ -185,6 +251,10 @@ class VisionLanguageModel(nn.Module):
 
         loss = None
         if targets is not None:
+            # VICTOR: ajustar targets para corresponder à redução de tokens
+            if self.cfg.use_victor and victor_info is not None:
+                targets = self._adjust_targets_for_victor(targets, victor_info, input_ids)
+            
             logits = self.decoder.head(logits) # Apply LM head
             # Loss is calculated over all tokens, but `targets` (labels) will have -100 for non-answer tokens.
             # No need to slice logits based on image embedding size here, as the target mask handles it.

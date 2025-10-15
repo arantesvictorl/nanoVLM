@@ -6,28 +6,28 @@ class VLMConfig:
     vit_hidden_dim: int = 768
     vit_inter_dim: int = 4 * vit_hidden_dim
     vit_patch_size: int = 16
-    vit_img_size: int = 512
+    vit_img_size: int = 512  # Mantém 512 para qualidade
     vit_n_heads: int = 12
     vit_dropout: float = 0.0
     vit_n_blocks: int = 12
     vit_ln_eps: float = 1e-6
     vit_cls_flag: bool = False
-    vit_model_type: str = 'google/siglip2-base-patch16-512'
+    vit_model_type: str = 'google/siglip-base-patch16-512'
 
     lm_hidden_dim: int = 960
     lm_inter_dim: int = 2560
     lm_rms_eps: float = 1e-5
     lm_re_base: int = 100000
-    lm_max_position_embeddings: int = 8192
+    lm_max_position_embeddings: int = 2048  # Reduzido para L4
     lm_base_vocab_size: int = 49152
     extra_token_amount: int = 66  # Number of extra tokens for the VLM (image start, image end, image token)
     lm_vocab_size: int = lm_base_vocab_size + extra_token_amount # Not a great way to do this, but it works for now (vlm_extra_tokens cannot be a dict, since this is mutable, and a Field has no len() function)
     lm_n_heads: int = 15
     lm_n_kv_heads: int = 5
     lm_dropout: float = 0.0
-    lm_n_blocks: int = 32
+    lm_n_blocks: int = 24  # SmolLM2-360M (reduzido de 32)
     lm_attn_scaling: float = 1.0
-    lm_max_length: int = 8192
+    lm_max_length: int = 2048  # Reduzido para L4
     lm_use_tokens: bool = False # Decide if the LM expects tokens or embeddings as input (if using as a backbone for the VLM, set to False)
     lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embedding weights
     lm_model_type: str = 'HuggingFaceTB/SmolLM2-360M-Instruct' #'HuggingFaceTB/SmolLM2-135M' #
@@ -37,7 +37,7 @@ class VLMConfig:
     mp_pixel_shuffle_factor: int = 4
     mp_image_token_length: int = 64
 
-    max_img_size: int = 2048
+    max_img_size: int = 1024  # Reduzido para L4 (1024 = 512 * 2, divisível!)
     resize_to_max_side_len: bool = True
 
     # VICTOR: Visual Compact Token Registers
