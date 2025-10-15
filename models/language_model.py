@@ -557,16 +557,60 @@ class LanguageModel(nn.Module):
             new_cos_list.append(cos[b, keep_mask])
             new_sin_list.append(sin[b, keep_mask])
         
-        # Empilhar de volta (todos devem ter o mesmo comprimento)
-        x_new = torch.stack(new_x_list, dim=0)
+        # Fazer padding para mesmo tamanho antes de empilhar
+        max_len = max(t.size(0) for t in new_x_list)
+        
+        padded_x_list = []
+        padded_mask_list = []
+        padded_cos_list = []
+        padded_sin_list = []
+        
+        for b in range(B):
+            # Pad x
+            x_b = new_x_list[b]
+            if x_b.size(0) < max_len:
+                pad_len = max_len - x_b.size(0)
+                x_pad = torch.zeros(pad_len, D, device=x.device, dtype=x.dtype)
+                x_b = torch.cat([x_b, x_pad], dim=0)
+            padded_x_list.append(x_b)
+            
+            # Pad attention mask
+            if attention_mask is not None:
+                mask_b = new_mask_list[b]
+                if mask_b.size(0) < max_len:
+                    pad_len = max_len - mask_b.size(0)
+                    mask_pad = torch.zeros(pad_len, device=attention_mask.device, dtype=attention_mask.dtype)
+                    mask_b = torch.cat([mask_b, mask_pad], dim=0)
+                padded_mask_list.append(mask_b)
+            
+            # Pad cos
+            cos_b = new_cos_list[b]
+            if cos_b.size(0) < max_len:
+                pad_len = max_len - cos_b.size(0)
+                # Repetir último valor de cos para padding
+                cos_pad = cos_b[-1:].expand(pad_len, -1)
+                cos_b = torch.cat([cos_b, cos_pad], dim=0)
+            padded_cos_list.append(cos_b)
+            
+            # Pad sin
+            sin_b = new_sin_list[b]
+            if sin_b.size(0) < max_len:
+                pad_len = max_len - sin_b.size(0)
+                # Repetir último valor de sin para padding
+                sin_pad = sin_b[-1:].expand(pad_len, -1)
+                sin_b = torch.cat([sin_b, sin_pad], dim=0)
+            padded_sin_list.append(sin_b)
+        
+        # Empilhar de volta
+        x_new = torch.stack(padded_x_list, dim=0)
         
         if attention_mask is not None:
-            attention_mask_new = torch.stack(new_mask_list, dim=0)
+            attention_mask_new = torch.stack(padded_mask_list, dim=0)
         else:
             attention_mask_new = None
             
-        cos_new = torch.stack(new_cos_list, dim=0)
-        sin_new = torch.stack(new_sin_list, dim=0)
+        cos_new = torch.stack(padded_cos_list, dim=0)
+        sin_new = torch.stack(padded_sin_list, dim=0)
         
         return x_new, attention_mask_new, cos_new, sin_new
 
