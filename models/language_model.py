@@ -416,7 +416,7 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0):
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0, victor_info: dict=None):
         """
         Performs a forward pass through the language model.
 
@@ -433,6 +433,8 @@ class LanguageModel(nn.Module):
             start_pos (int, optional): The starting position index for the current input
                 sequence. Used to compute rotary positional embeddings correctly,
                 especially for cached sequences during generation. Default is 0.
+            victor_info (dict, optional): Informações do VICTOR para descarte de tokens visuais.
+                Contém 'drop_layer', 'num_original_visual_tokens', 'num_registers', 'visual_token_mask'.
 
         Returns:
             Tuple:
@@ -448,6 +450,8 @@ class LanguageModel(nn.Module):
             which are passed along to each transformer block.
             - For each transformer block, the input is processed along with
             rotary embeddings, attention mask, and optional cached key-values.
+            - VICTOR: Se victor_info for fornecido, os tokens visuais originais são descartados
+            após a camada especificada, mantendo apenas os registros.
             - After processing all blocks, a final RMS normalization is applied.
             - If tokens are used, the normalized hidden states are projected to logits
             over the vocabulary.
@@ -470,6 +474,12 @@ class LanguageModel(nn.Module):
 
         for i, block in enumerate(self.blocks):
             x, kv_cache[i] = block(x, cos, sin, attention_mask, kv_cache[i])
+            
+            # VICTOR: Descartar tokens visuais após a camada especificada
+            if victor_info is not None and i == victor_info['drop_layer'] - 1:  # -1 porque índice começa em 0
+                x, attention_mask, cos, sin = self._drop_visual_tokens(
+                    x, attention_mask, cos, sin, victor_info
+                )
 
         x = self.norm(x)
 
@@ -478,6 +488,87 @@ class LanguageModel(nn.Module):
             x = self.head(x) 
 
         return x, kv_cache
+    
+    def _drop_visual_tokens(self, x, attention_mask, cos, sin, victor_info):
+        """
+        Descarta tokens visuais originais, mantendo apenas os registros visuais.
+        
+        Args:
+            x: Tensor de embeddings [B, T, D]
+            attention_mask: Máscara de atenção [B, T]
+            cos, sin: Embeddings rotacionais [B, T, D]
+            victor_info: Dicionário com informações do VICTOR
+            
+        Returns:
+            Tuple de (x_reduzido, attention_mask_reduzida, cos_reduzido, sin_reduzido)
+        """
+        num_original_visual_tokens = victor_info['num_original_visual_tokens']
+        num_registers = victor_info['num_registers']
+        num_images = victor_info['num_images']
+        
+        B, T, D = x.size()
+        
+        # Cada imagem contribui com (num_original_visual_tokens + num_registers) tokens
+        tokens_per_image = num_original_visual_tokens + num_registers
+        
+        # Lista para armazenar os novos tensores
+        new_x_list = []
+        new_mask_list = []
+        new_cos_list = []
+        new_sin_list = []
+        
+        for b in range(B):
+            if num_images == 0:
+                # Nenhum token visual neste exemplo
+                new_x_list.append(x[b])
+                if attention_mask is not None:
+                    new_mask_list.append(attention_mask[b])
+                new_cos_list.append(cos[b])
+                new_sin_list.append(sin[b])
+                continue
+            
+            # Criar máscara de tokens a manter
+            keep_mask = torch.ones(T, dtype=torch.bool, device=x.device)
+            
+            # Os tokens visuais estão no início da sequência
+            # Para cada imagem: [visual_tokens (64)] [registers (8)]
+            # Queremos descartar: [visual_tokens (64)]
+            # E manter: [registers (8)]
+            
+            current_pos = 0
+            for _ in range(num_images):
+                # Marcar tokens visuais para descarte
+                visual_start = current_pos
+                visual_end = current_pos + num_original_visual_tokens
+                
+                # Verificar se não ultrapassamos o tamanho da sequência
+                if visual_end > T:
+                    break
+                
+                keep_mask[visual_start:visual_end] = False
+                
+                # Avançar para a próxima imagem (pular registros também)
+                current_pos += tokens_per_image
+            
+            # Aplicar máscara
+            new_x_list.append(x[b, keep_mask])
+            if attention_mask is not None:
+                new_mask_list.append(attention_mask[b, keep_mask])
+            new_cos_list.append(cos[b, keep_mask])
+            new_sin_list.append(sin[b, keep_mask])
+        
+        # Empilhar de volta (todos devem ter o mesmo comprimento)
+        x_new = torch.stack(new_x_list, dim=0)
+        
+        if attention_mask is not None:
+            attention_mask_new = torch.stack(new_mask_list, dim=0)
+        else:
+            attention_mask_new = None
+            
+        cos_new = torch.stack(new_cos_list, dim=0)
+        sin_new = torch.stack(new_sin_list, dim=0)
+        
+        return x_new, attention_mask_new, cos_new, sin_new
 
 
     @torch.inference_mode()

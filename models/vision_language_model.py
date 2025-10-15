@@ -8,7 +8,7 @@ from typing import Optional
 from models.utils import top_k_top_p_filtering
 from models.vision_transformer import ViT
 from models.language_model import LanguageModel
-from models.modality_projector import ModalityProjector
+from models.modality_projector import ModalityProjector, VisualRegisters
 from models.config import VLMConfig
 
 from data.processors import get_tokenizer
@@ -30,9 +30,97 @@ class VisionLanguageModel(nn.Module):
             self.vision_encoder = ViT(cfg)
             self.decoder = LanguageModel(cfg)
         self.MP = ModalityProjector(cfg)
+        
+        # VICTOR: Visual Compact Token Registers
+        if cfg.use_victor:
+            self.visual_registers = VisualRegisters(cfg)
+            print(f"VICTOR ativado: {cfg.victor_num_registers} registros, descarte na camada {cfg.victor_drop_layer}")
+        else:
+            self.visual_registers = None
+            
         self.load_backbone = load_backbone
         self.tokenizer = get_tokenizer(cfg.lm_tokenizer, cfg.vlm_extra_tokens, cfg.lm_chat_template)
 
+    def _insert_visual_registers(self, token_embd, attention_mask, input_ids, num_visual_tokens):
+        """
+        Insere registros visuais após cada bloco de tokens visuais na sequência.
+        
+        Args:
+            token_embd: Tensor de embeddings [B, T, D]
+            attention_mask: Máscara de atenção [B, T]
+            input_ids: IDs de input originais [B, T_original]
+            num_visual_tokens: Número de tokens visuais por imagem
+            
+        Returns:
+            Tuple de (token_embd_com_registros, attention_mask_atualizada)
+        """
+        B, T, D = token_embd.size()
+        
+        # Identificar onde estavam os placeholders de imagem nos input_ids originais
+        image_token_mask = (input_ids == self.tokenizer.image_token_id)  # [B, T_original]
+        
+        # Para cada exemplo no batch, inserir registros
+        new_embd_list = []
+        new_mask_list = []
+        
+        for b in range(B):
+            # Contar quantas imagens temos
+            # Total de placeholders / placeholders_por_imagem = número de imagens
+            num_placeholders = image_token_mask[b].sum().item()
+            num_images = num_placeholders // num_visual_tokens if num_placeholders > 0 else 0
+            
+            if num_images == 0:
+                # Sem imagens neste exemplo
+                new_embd_list.append(token_embd[b])
+                if attention_mask is not None:
+                    new_mask_list.append(attention_mask[b])
+                continue
+            
+            # Obter registros para este exemplo
+            registers = self.visual_registers(num_images)  # [num_images, num_registers, D]
+            
+            # Inserir registros após cada bloco de tokens visuais
+            parts = []
+            mask_parts = []
+            current_pos = 0
+            
+            for img_idx in range(num_images):
+                # Adicionar tokens visuais
+                visual_start = current_pos
+                visual_end = current_pos + num_visual_tokens
+                parts.append(token_embd[b, visual_start:visual_end])
+                
+                # Adicionar registros
+                parts.append(registers[img_idx])
+                
+                # Atualizar attention mask
+                if attention_mask is not None:
+                    mask_parts.append(attention_mask[b, visual_start:visual_end])
+                    mask_parts.append(torch.ones(self.cfg.victor_num_registers, device=attention_mask.device))
+                
+                current_pos = visual_end
+            
+            # Adicionar resto da sequência (texto)
+            if current_pos < T:
+                parts.append(token_embd[b, current_pos:])
+                if attention_mask is not None:
+                    mask_parts.append(attention_mask[b, current_pos:])
+            
+            # Concatenar
+            new_embd_list.append(torch.cat(parts, dim=0))
+            if attention_mask is not None:
+                new_mask_list.append(torch.cat(mask_parts, dim=0))
+        
+        # Stack de volta
+        token_embd_new = torch.stack(new_embd_list, dim=0)
+        
+        if attention_mask is not None:
+            attention_mask_new = torch.stack(new_mask_list, dim=0)
+        else:
+            attention_mask_new = None
+        
+        return token_embd_new, attention_mask_new
+    
     def _replace_img_tokens_with_embd(self, input_ids, token_embd, image_embd):
         """
         Replace every image-token placeholder in `input_ids` with the corresponding slice
@@ -63,12 +151,37 @@ class VisionLanguageModel(nn.Module):
         images_tensor = self._process_images(images, input_ids.device)
         token_embd = self.decoder.token_embedding(input_ids) # [B, T_sequence, D_lm]
 
+        # VICTOR: informações sobre tokens visuais
+        victor_info = None
         if images_tensor is not None:
             image_embd = self.vision_encoder(images_tensor)
             image_embd = self.MP(image_embd)  # [num_images, mp_image_token_length, D_lm]
+            
+            # Substituir placeholders com embeddings visuais primeiro
             token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
+            
+            # VICTOR: adicionar registros APÓS substituir placeholders
+            if self.cfg.use_victor:
+                num_original_visual_tokens = image_embd.size(1)
+                
+                # Número total de imagens = total de embeddings visuais processados
+                # Dividido por batch para obter imagens por amostra (assumindo uniforme)
+                total_images = images_tensor.size(0)
+                num_images_per_sample = total_images // input_ids.size(0)
+                
+                # Inserir registros após cada bloco de tokens visuais
+                token_embd, attention_mask = self._insert_visual_registers(
+                    token_embd, attention_mask, input_ids, num_original_visual_tokens
+                )
+                
+                victor_info = {
+                    'drop_layer': self.cfg.victor_drop_layer,
+                    'num_original_visual_tokens': num_original_visual_tokens,
+                    'num_registers': self.cfg.victor_num_registers,
+                    'num_images': num_images_per_sample,
+                }
 
-        logits, _ = self.decoder(token_embd, attention_mask=attention_mask)
+        logits, _ = self.decoder(token_embd, attention_mask=attention_mask, victor_info=victor_info)
 
         loss = None
         if targets is not None:
@@ -84,12 +197,35 @@ class VisionLanguageModel(nn.Module):
         images_tensor = self._process_images(images, input_ids.device)
         token_embd = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
 
+        # VICTOR: informações sobre tokens visuais
+        victor_info = None
         if images_tensor is not None:
             # 1. Process image if present
             image_embd = self.vision_encoder(images_tensor) # [B, T_img_feat, D_model]
             image_embd = self.MP(image_embd)      # [B, mp_image_token_length, D_lm]
+            
             # 2. Combine image and text embeddings
             token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
+            
+            # VICTOR: adicionar registros APÓS substituir placeholders
+            if self.cfg.use_victor:
+                num_original_visual_tokens = image_embd.size(1)
+                
+                # Número total de imagens = total de embeddings visuais processados
+                # Dividido por batch para obter imagens por amostra (assumindo uniforme)
+                total_images = images_tensor.size(0)
+                num_images_per_sample = total_images // input_ids.size(0)
+                
+                token_embd, attention_mask = self._insert_visual_registers(
+                    token_embd, attention_mask, input_ids, num_original_visual_tokens
+                )
+                
+                victor_info = {
+                    'drop_layer': self.cfg.victor_drop_layer,
+                    'num_original_visual_tokens': num_original_visual_tokens,
+                    'num_registers': self.cfg.victor_num_registers,
+                    'num_images': num_images_per_sample,
+                }
 
         current_total_seq_len = token_embd.size(1)
         batch_size = input_ids.size(0) # Or token_embd.size(0)
@@ -99,7 +235,8 @@ class VisionLanguageModel(nn.Module):
             token_embd,
             attention_mask=attention_mask, # Use the provided attention mask
             kv_cache=None,
-            start_pos=0
+            start_pos=0,
+            victor_info=victor_info
         )
         
         last_token_output_from_prefill = prefill_output[:, -1, :] 
@@ -135,11 +272,13 @@ class VisionLanguageModel(nn.Module):
                 attention_mask = torch.cat((attention_mask, torch.ones((batch_size, 1), device=attention_mask.device, dtype=attention_mask.dtype)), dim=1)
 
             # With KV cache: only process the new token
+            # VICTOR: não precisa passar victor_info na fase de decodificação (tokens visuais já foram descartados)
             decode_step_output, kv_cache_list = self.decoder(
                 next_token_embed,
                 attention_mask=attention_mask,
                 kv_cache=kv_cache_list,
-                start_pos=current_token_start_pos
+                start_pos=current_token_start_pos,
+                victor_info=None  # Tokens visuais já foram processados no prefill
             )
       
             last_token_output = decode_step_output[:, -1, :] 

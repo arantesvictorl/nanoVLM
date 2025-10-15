@@ -1,4 +1,5 @@
 # Modality Projection from Vision to Language
+import torch
 import torch.nn as nn
 
 class ModalityProjector(nn.Module):
@@ -43,4 +44,36 @@ class ModalityProjector(nn.Module):
 
         return x
 
+
+class VisualRegisters(nn.Module):
+    """
+    Visual Compact Token Registers (VICTOR) para sumarizar tokens visuais.
     
+    Esta classe implementa registros aprendiveis que sao usados para comprimir
+    a informacao visual em um conjunto menor de tokens, reduzindo o custo
+    computacional do modelo de linguagem.
+    
+    Args:
+        cfg: Configuracao contendo:
+            - victor_num_registers (int): Numero de registros visuais
+            - lm_hidden_dim (int): Dimensao dos embeddings do modelo de linguagem
+    """
+    def __init__(self, cfg):
+        super().__init__()
+        self.num_registers = cfg.victor_num_registers
+        self.hidden_dim = cfg.lm_hidden_dim
+        
+        # Registros aprendiveis inicializados aleatoriamente
+        self.registers = nn.Parameter(torch.randn(1, self.num_registers, self.hidden_dim) * 0.02)
+    
+    def forward(self, batch_size):
+        """
+        Retorna os registros visuais replicados para o tamanho do batch.
+        
+        Args:
+            batch_size (int): Tamanho do batch
+            
+        Returns:
+            torch.Tensor: Registros com shape [batch_size, num_registers, hidden_dim]
+        """
+        return self.registers.expand(batch_size, -1, -1)
