@@ -41,16 +41,19 @@ class VisionLanguageModel(nn.Module):
         self.load_backbone = load_backbone
         self.tokenizer = get_tokenizer(cfg.lm_tokenizer, cfg.vlm_extra_tokens, cfg.lm_chat_template)
 
-    def _adjust_targets_for_victor(self, targets, victor_info, input_ids):
+    def _adjust_targets_for_victor(self, targets, victor_info, input_ids, logits_shape):
         """
         Ajusta os targets para corresponder à redução de tokens pelo VICTOR.
         Remove as posições dos tokens visuais originais, mantendo os registros.
+        Usa o shape dos logits como referência para garantir sincronização perfeita.
         """
         num_original_visual_tokens = victor_info['num_original_visual_tokens']
         num_registers = victor_info['num_registers']
-        seq_lengths_before_drop = victor_info['seq_lengths_before_drop']
         
         B, T = targets.size()
+        # Pegar o comprimento exato dos logits após drop + padding
+        target_seq_len = logits_shape[1]
+        
         image_token_mask = (input_ids == self.tokenizer.image_token_id)
         
         new_targets_list = []
@@ -60,24 +63,18 @@ class VisionLanguageModel(nn.Module):
             num_images_in_sample = num_placeholders // num_original_visual_tokens if num_placeholders > 0 else 0
             
             if num_images_in_sample == 0:
-                new_targets_list.append(targets[b])
+                # Sem imagens - apenas copiar e fazer padding para target_seq_len
+                targets_b = targets[b]
+                if targets_b.size(0) < target_seq_len:
+                    pad_len = target_seq_len - targets_b.size(0)
+                    targets_b = torch.cat([targets_b, torch.full((pad_len,), -100, dtype=targets.dtype, device=targets.device)], dim=0)
+                elif targets_b.size(0) > target_seq_len:
+                    targets_b = targets_b[:target_seq_len]
+                new_targets_list.append(targets_b)
                 continue
             
-            # Usar o comprimento exato que foi usado após inserir registros e fazer padding
-            seq_len_with_registers = seq_lengths_before_drop[b]
-            
-            # Criar máscara para manter apenas registros e texto
-            keep_mask = torch.ones(seq_len_with_registers, dtype=torch.bool, device=targets.device)
-            
-            current_pos = 0
-            for _ in range(num_images_in_sample):
-                # Marcar tokens visuais para remoção
-                visual_start = current_pos
-                visual_end = current_pos + num_original_visual_tokens
-                if visual_end > seq_len_with_registers:
-                    break
-                keep_mask[visual_start:visual_end] = False
-                current_pos += num_original_visual_tokens + num_registers
+            # Comprimento após inserir registros (antes do drop)
+            seq_len_with_registers = T + num_images_in_sample * num_registers
             
             # Expandir targets para incluir posições de registros
             expanded_targets = torch.full((seq_len_with_registers,), -100, 
@@ -102,16 +99,31 @@ class VisionLanguageModel(nn.Module):
                 remaining = min(T - target_idx, seq_len_with_registers - expanded_idx)
                 expanded_targets[expanded_idx:expanded_idx+remaining] = targets[b, target_idx:target_idx+remaining]
             
-            # Aplicar máscara para remover tokens visuais
-            new_targets_list.append(expanded_targets[keep_mask])
+            # Criar máscara para remover tokens visuais (igual ao decoder)
+            keep_mask = torch.ones(seq_len_with_registers, dtype=torch.bool, device=targets.device)
+            current_pos = 0
+            for _ in range(num_images_in_sample):
+                visual_start = current_pos
+                visual_end = current_pos + num_original_visual_tokens
+                if visual_end > seq_len_with_registers:
+                    break
+                keep_mask[visual_start:visual_end] = False
+                current_pos += num_original_visual_tokens + num_registers
+            
+            # Aplicar máscara
+            targets_after_drop = expanded_targets[keep_mask]
+            
+            # Fazer padding/truncate para target_seq_len (igual ao decoder)
+            if targets_after_drop.size(0) < target_seq_len:
+                pad_len = target_seq_len - targets_after_drop.size(0)
+                targets_after_drop = torch.cat([targets_after_drop, torch.full((pad_len,), -100, dtype=targets.dtype, device=targets.device)], dim=0)
+            elif targets_after_drop.size(0) > target_seq_len:
+                targets_after_drop = targets_after_drop[:target_seq_len]
+            
+            new_targets_list.append(targets_after_drop)
         
-        # Calcular comprimento esperado após drop (baseado nos logits do decoder)
-        # O decoder remove os tokens visuais, então precisamos do mesmo tamanho
-        max_len = max(t.size(0) for t in new_targets_list)
-        
-        padded_targets = torch.full((B, max_len), -100, dtype=targets.dtype, device=targets.device)
-        for b, t in enumerate(new_targets_list):
-            padded_targets[b, :t.size(0)] = t
+        # Stack final
+        padded_targets = torch.stack(new_targets_list, dim=0)
         
         return padded_targets
     
@@ -291,27 +303,15 @@ class VisionLanguageModel(nn.Module):
         loss = None
         if targets is not None:
             # VICTOR: ajustar targets para corresponder à redução de tokens
+            # Usa o shape dos logits como referência para garantir sincronização perfeita
             if self.cfg.use_victor and victor_info is not None:
-                targets = self._adjust_targets_for_victor(targets, victor_info, input_ids)
+                targets = self._adjust_targets_for_victor(targets, victor_info, input_ids, logits.shape)
             
             logits = self.decoder.head(logits) # Apply LM head
             
-            # DEBUG: Verificar tamanhos
-            logits_flat = logits.reshape(-1, logits.size(-1))
-            targets_flat = targets.reshape(-1)
-            if logits_flat.size(0) != targets_flat.size(0):
-                print(f"❌ VICTOR DEBUG:")
-                print(f"  Logits shape: {logits.shape} -> flat: {logits_flat.shape}")
-                print(f"  Targets shape: {targets.shape} -> flat: {targets_flat.shape}")
-                if victor_info:
-                    print(f"  seq_lengths_before_drop: {victor_info['seq_lengths_before_drop']}")
-                    print(f"  num_original_visual: {victor_info['num_original_visual_tokens']}")
-                    print(f"  num_registers: {victor_info['num_registers']}")
-                    print(f"  num_images: {victor_info['num_images']}")
-            
             # Loss is calculated over all tokens, but `targets` (labels) will have -100 for non-answer tokens.
             # No need to slice logits based on image embedding size here, as the target mask handles it.
-            loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=-100)
+            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
 
         return logits, loss
 
