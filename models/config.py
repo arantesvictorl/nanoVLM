@@ -41,7 +41,7 @@ class VLMConfig:
     resize_to_max_side_len: bool = True
 
     # VICTOR: Visual Compact Token Registers
-    use_victor: bool = False
+    use_victor: bool = True
     victor_num_registers: int = 8
     victor_drop_layer: int = 3
 
@@ -56,7 +56,7 @@ class VLMConfig:
       "r8c1": "<row_8_col_1>", "r8c2": "<row_8_col_2>", "r8c3": "<row_8_col_3>", "r8c4": "<row_8_col_4>", "r8c5": "<row_8_col_5>", "r8c6": "<row_8_col_6>", "r8c7": "<row_8_col_7>", "r8c8": "<row_8_col_8>"})
     vlm_load_backbone_weights: bool = True
     vlm_checkpoint_path: str = 'checkpoints'
-    hf_repo_name: str = 'nanoVLM'
+    hf_repo_name: str = 'nanoVictor'
 
 
 @dataclass
@@ -78,13 +78,13 @@ class TrainConfig:
     max_sample_length: int = 8192
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
-    train_dataset_path: str = '/fsx/luis_wiedmann/datasets/asterix_rated'
-    train_dataset_name: tuple[str, ...] = ("all", ) #('allava_laion', 'allava_vflan', 'cambrian(filtered)_processed', 'LLaVA_Instruct_150K', 'mmevol', 'sharegpt4o', 'sharegpt4v(coco)', 'sharegpt4v(knowledge)', 'sharegpt4v(llava)', 'sharegpt4v(sam)') # 'vision_flan(filtered)', 'lvis_instruct4v',
+    train_dataset_path = 'HuggingFaceM4/the_cauldron'
+    train_dataset_name = ('tqa',) #('allava_laion', 'allava_vflan', 'cambrian(filtered)_processed', 'LLaVA_Instruct_150K', 'mmevol', 'sharegpt4o', 'sharegpt4v(coco)', 'sharegpt4v(knowledge)', 'sharegpt4v(llava)', 'sharegpt4v(sam)') # 'vision_flan(filtered)', 'lvis_instruct4v',
     relevance_min_rating: int = 1
     image_correspondence_min_rating: int = 1
     visual_dependency_min_rating: int = 1
     formatting_min_rating: int = 1
-    wandb_entity: str = "HuggingFace" # Indicate the entity to log to in wandb
+    wandb_entity: str = "arantesvictorl-ufg" # Indicate the entity to log to in wandb
     log_wandb: bool = True
     use_lmms_eval: bool = True # Use lmms-eval for evaluation
     lmms_eval_tasks: str = 'mmstar,mmmu,ocrbench,textvqa,docvqa,scienceqa,mme,infovqa' # Pass additional task as one string, seperated by commas without spaces (e.g. 'mmstar,mmmu,ocrbench')
