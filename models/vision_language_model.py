@@ -295,9 +295,23 @@ class VisionLanguageModel(nn.Module):
                 targets = self._adjust_targets_for_victor(targets, victor_info, input_ids)
             
             logits = self.decoder.head(logits) # Apply LM head
+            
+            # DEBUG: Verificar tamanhos
+            logits_flat = logits.reshape(-1, logits.size(-1))
+            targets_flat = targets.reshape(-1)
+            if logits_flat.size(0) != targets_flat.size(0):
+                print(f"❌ VICTOR DEBUG:")
+                print(f"  Logits shape: {logits.shape} -> flat: {logits_flat.shape}")
+                print(f"  Targets shape: {targets.shape} -> flat: {targets_flat.shape}")
+                if victor_info:
+                    print(f"  seq_lengths_before_drop: {victor_info['seq_lengths_before_drop']}")
+                    print(f"  num_original_visual: {victor_info['num_original_visual_tokens']}")
+                    print(f"  num_registers: {victor_info['num_registers']}")
+                    print(f"  num_images: {victor_info['num_images']}")
+            
             # Loss is calculated over all tokens, but `targets` (labels) will have -100 for non-answer tokens.
             # No need to slice logits based on image embedding size here, as the target mask handles it.
-            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
+            loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=-100)
 
         return logits, loss
 
