@@ -177,11 +177,38 @@ class VisionLanguageModel(nn.Module):
             if attention_mask is not None:
                 new_mask_list.append(torch.cat(mask_parts, dim=0))
         
+        # Fazer padding para mesmo tamanho antes de empilhar
+        max_len = max(emb.size(0) for emb in new_embd_list)
+        
+        padded_embd_list = []
+        padded_mask_list = []
+        
+        for b in range(B):
+            emb = new_embd_list[b]
+            current_len = emb.size(0)
+            
+            if current_len < max_len:
+                # Pad embeddings com zeros
+                pad_len = max_len - current_len
+                padding = torch.zeros(pad_len, D, device=emb.device, dtype=emb.dtype)
+                emb = torch.cat([emb, padding], dim=0)
+            
+            padded_embd_list.append(emb)
+            
+            if attention_mask is not None:
+                mask = new_mask_list[b]
+                if mask.size(0) < max_len:
+                    # Pad mask com zeros (tokens ignorados)
+                    pad_len = max_len - mask.size(0)
+                    mask_padding = torch.zeros(pad_len, device=mask.device, dtype=mask.dtype)
+                    mask = torch.cat([mask, mask_padding], dim=0)
+                padded_mask_list.append(mask)
+        
         # Stack de volta
-        token_embd_new = torch.stack(new_embd_list, dim=0)
+        token_embd_new = torch.stack(padded_embd_list, dim=0)
         
         if attention_mask is not None:
-            attention_mask_new = torch.stack(new_mask_list, dim=0)
+            attention_mask_new = torch.stack(padded_mask_list, dim=0)
         else:
             attention_mask_new = None
         
