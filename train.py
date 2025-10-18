@@ -172,7 +172,8 @@ def get_dataloaders(train_cfg, vlm_cfg):
     val_dataset = VQADataset(val_ds, tokenizer, image_processor, vlm_cfg.mp_image_token_length, train_cfg.relevance_min_rating, train_cfg.image_correspondence_min_rating, train_cfg.visual_dependency_min_rating, train_cfg.formatting_min_rating)
 
     train_dataset = ConstantLengthDataset(train_dataset, infinite=False, max_sample_length=train_cfg.max_sample_length, seq_length=vlm_cfg.lm_max_length, num_of_sequences=train_cfg.batch_size*4, queue_size=8,
-                                        max_images_per_example=train_cfg.max_images_per_example, max_images_per_knapsack=train_cfg.max_images_per_knapsack)
+                                        max_images_per_example=train_cfg.max_images_per_example, max_images_per_knapsack=train_cfg.max_images_per_knapsack,
+                                        use_victor=vlm_cfg.use_victor, victor_num_registers=vlm_cfg.victor_num_registers)
 
     # Create collators
     vqa_collator = VQACollator(tokenizer, vlm_cfg.lm_max_length)

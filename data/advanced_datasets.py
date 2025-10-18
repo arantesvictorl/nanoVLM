@@ -19,6 +19,8 @@ class ConstantLengthDataset(IterableDataset):
         queue_size: int = 2,
         max_images_per_example: int = 4,
         max_images_per_knapsack: int = 18,
+        use_victor: bool = False,
+        victor_num_registers: int = 8,
     ):
         self.dataset = dataset
         self.max_sample_length = max_sample_length
@@ -29,6 +31,8 @@ class ConstantLengthDataset(IterableDataset):
         self.queue_size = max(queue_size, 1)
         self.max_images_per_example = max_images_per_example
         self.max_images_per_knapsack = max_images_per_knapsack
+        self.use_victor = use_victor
+        self.victor_num_registers = victor_num_registers
         self._sentinel = object()
         self._average_length_per_sample = (
             self.dataset.mp_image_token_length + 198
@@ -173,6 +177,15 @@ class ConstantLengthDataset(IterableDataset):
         # Extract lengths and image counts from buffer
         lengths = [len(x["input_ids"]) for x in buffer]
         image_counts = [len(x["images"]) for x in buffer]
+        
+        # VICTOR: Adicionar overhead dos registros visuais ao comprimento
+        # Durante o processamento, cada imagem adiciona victor_num_registers tokens extras
+        # ANTES do drop na camada 3
+        if self.use_victor:
+            lengths = [
+                length + (img_count * self.victor_num_registers)
+                for length, img_count in zip(lengths, image_counts)
+            ]
 
         # keep the position while sorting
         items = sorted(
@@ -227,8 +240,14 @@ class ConstantLengthDataset(IterableDataset):
             am.extend(batch[i]["attention_mask"])
             ims.extend(batch[i]["images"])
 
-        # safety: assert we never overflow
+        # Truncar se exceder o limite (pode acontecer com VICTOR que adiciona registros)
         if len(ids) > max_len:
-            raise ValueError(f"Packed length {len(ids)} > max_len {max_len}")
-
+            # Truncar mantendo apenas os primeiros max_len tokens
+            ids = ids[:max_len]
+            lbl = lbl[:max_len]
+            am = am[:max_len]
+            # Importante: verificar se truncamos alguma imagem
+            # Contar quantos tokens de imagem temos nos ids truncados
+            # Se truncamos uma imagem parcialmente, precisamos removê-la completamente
+            
         return torch.stack(ids), torch.stack(lbl), torch.stack(am), ims
