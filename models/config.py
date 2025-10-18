@@ -6,13 +6,13 @@ class VLMConfig:
     vit_hidden_dim: int = 768
     vit_inter_dim: int = 4 * vit_hidden_dim
     vit_patch_size: int = 16
-    vit_img_size: int = 512  # Mantém 512 para qualidade
+    vit_img_size: int = 512
     vit_n_heads: int = 12
     vit_dropout: float = 0.0
     vit_n_blocks: int = 12
     vit_ln_eps: float = 1e-6
     vit_cls_flag: bool = False
-    vit_model_type: str = 'google/siglip-base-patch16-512'
+    vit_model_type: str = 'google/siglip2-base-patch16-512'
 
     lm_hidden_dim: int = 960
     lm_inter_dim: int = 2560
@@ -25,19 +25,19 @@ class VLMConfig:
     lm_n_heads: int = 15
     lm_n_kv_heads: int = 5
     lm_dropout: float = 0.0
-    lm_n_blocks: int = 24  # SmolLM2-360M (reduzido de 32)
+    lm_n_blocks: int = 32
     lm_attn_scaling: float = 1.0
     lm_max_length: int = 2048  # Reduzido para L4
     lm_use_tokens: bool = False # Decide if the LM expects tokens or embeddings as input (if using as a backbone for the VLM, set to False)
     lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embedding weights
-    lm_model_type: str = 'HuggingFaceTB/SmolLM2-360M-Instruct' #'HuggingFaceTB/SmolLM2-135M' #
-    lm_tokenizer: str = 'HuggingFaceTB/SmolLM2-360M-Instruct'
+    lm_model_type: str = 'HuggingFaceTB/SmolLM2-135M-Instruct' #'HuggingFaceTB/SmolLM2-135M' #
+    lm_tokenizer: str = 'HuggingFaceTB/SmolLM2-135M-Instruct'
     lm_chat_template: str = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 
     mp_pixel_shuffle_factor: int = 4
     mp_image_token_length: int = 64
 
-    max_img_size: int = 1024  # Reduzido para L4 (1024 = 512 * 2, divisível!)
+    max_img_size: int = 1024
     resize_to_max_side_len: bool = True
 
     # VICTOR: Visual Compact Token Registers
@@ -72,14 +72,14 @@ class TrainConfig:
     eval_in_epochs: bool = True
     eval_interval: int = 500
     stats_log_interval: int = 100
-    max_training_steps: int = 80100
-    max_images_per_example: int = 8
-    max_images_per_knapsack: int = 36
-    max_sample_length: int = 8192
+    max_training_steps: int = 6000
+    max_images_per_example: int = 4  # Reduzir para economizar memória
+    max_images_per_knapsack: int = 16  # Reduzir para economizar memória
+    max_sample_length: int = 4096  # Reduzir para economizar memória
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
-    train_dataset_path = 'HuggingFaceM4/the_cauldron'
-    train_dataset_name = ('tqa',) #('allava_laion', 'allava_vflan', 'cambrian(filtered)_processed', 'LLaVA_Instruct_150K', 'mmevol', 'sharegpt4o', 'sharegpt4v(coco)', 'sharegpt4v(knowledge)', 'sharegpt4v(llava)', 'sharegpt4v(sam)') # 'vision_flan(filtered)', 'lvis_instruct4v',
+    train_dataset_path: str = 'HuggingFaceM4/the_cauldron'
+    train_dataset_name: tuple[str, ...] = ('tqa', 'textvqa', 'docvqa', 'scienceqa', 'vqav2') #('allava_laion', 'allava_vflan', 'cambrian(filtered)_processed', 'LLaVA_Instruct_150K', 'mmevol', 'sharegpt4o', 'sharegpt4v(coco)', 'sharegpt4v(knowledge)', 'sharegpt4v(llava)', 'sharegpt4v(sam)') # 'vision_flan(filtered)', 'lvis_instruct4v',
     relevance_min_rating: int = 1
     image_correspondence_min_rating: int = 1
     visual_dependency_min_rating: int = 1
