@@ -434,7 +434,7 @@ class LanguageModel(nn.Module):
                 sequence. Used to compute rotary positional embeddings correctly,
                 especially for cached sequences during generation. Default is 0.
             victor_info (dict, optional): Informações do VICTOR para descarte de tokens visuais.
-                Contém 'drop_layer', 'num_original_visual_tokens', 'num_registers', 'visual_token_mask'.
+                Contém 'drop_layer', 'num_original_visual_tokens', 'num_registers', 'num_images_per_sample'.
 
         Returns:
             Tuple:
@@ -492,6 +492,8 @@ class LanguageModel(nn.Module):
     def _drop_visual_tokens(self, x, attention_mask, cos, sin, victor_info):
         """
         Descarta tokens visuais originais, mantendo apenas os registros visuais.
+        Importante: A attention_mask NÃO é reduzida, apenas os tokens visuais são marcados como 0.
+        Isso garante compatibilidade com o KV cache durante a geração.
         
         Args:
             x: Tensor de embeddings [B, T, D]
@@ -500,11 +502,11 @@ class LanguageModel(nn.Module):
             victor_info: Dicionário com informações do VICTOR
             
         Returns:
-            Tuple de (x_reduzido, attention_mask_reduzida, cos_reduzido, sin_reduzido)
+            Tuple de (x_reduzido, attention_mask_original_com_zeros, cos_reduzido, sin_reduzido)
         """
         num_original_visual_tokens = victor_info['num_original_visual_tokens']
         num_registers = victor_info['num_registers']
-        num_images = victor_info['num_images']
+        num_images_per_sample = victor_info['num_images_per_sample']  # Lista com número de imagens por amostra
         
         B, T, D = x.size()
         
@@ -513,21 +515,27 @@ class LanguageModel(nn.Module):
         
         # Lista para armazenar os novos tensores
         new_x_list = []
-        new_mask_list = []
         new_cos_list = []
         new_sin_list = []
         
+        # Criar nova attention_mask mantendo o tamanho original mas zerando tokens descartados
+        if attention_mask is not None:
+            new_attention_mask = attention_mask.clone()
+        else:
+            new_attention_mask = None
+        
         for b in range(B):
+            # Usar o número correto de imagens para esta amostra
+            num_images = num_images_per_sample[b]
+            
             if num_images == 0:
                 # Nenhum token visual neste exemplo
                 new_x_list.append(x[b])
-                if attention_mask is not None:
-                    new_mask_list.append(attention_mask[b])
                 new_cos_list.append(cos[b])
                 new_sin_list.append(sin[b])
                 continue
             
-            # Criar máscara de tokens a manter
+            # Criar máscara de tokens a manter para x, cos, sin
             keep_mask = torch.ones(T, dtype=torch.bool, device=x.device)
             
             # Os tokens visuais estão no início da sequência
@@ -547,13 +555,15 @@ class LanguageModel(nn.Module):
                 
                 keep_mask[visual_start:visual_end] = False
                 
+                # Zerar a attention_mask para tokens visuais descartados
+                if new_attention_mask is not None:
+                    new_attention_mask[b, visual_start:visual_end] = 0
+                
                 # Avançar para a próxima imagem (pular registros também)
                 current_pos += tokens_per_image
             
-            # Aplicar máscara
+            # Aplicar máscara apenas em x, cos, sin (não na attention_mask)
             new_x_list.append(x[b, keep_mask])
-            if attention_mask is not None:
-                new_mask_list.append(attention_mask[b, keep_mask])
             new_cos_list.append(cos[b, keep_mask])
             new_sin_list.append(sin[b, keep_mask])
         
@@ -561,7 +571,6 @@ class LanguageModel(nn.Module):
         max_len = max(t.size(0) for t in new_x_list)
         
         padded_x_list = []
-        padded_mask_list = []
         padded_cos_list = []
         padded_sin_list = []
         
@@ -573,15 +582,6 @@ class LanguageModel(nn.Module):
                 x_pad = torch.zeros(pad_len, D, device=x.device, dtype=x.dtype)
                 x_b = torch.cat([x_b, x_pad], dim=0)
             padded_x_list.append(x_b)
-            
-            # Pad attention mask
-            if attention_mask is not None:
-                mask_b = new_mask_list[b]
-                if mask_b.size(0) < max_len:
-                    pad_len = max_len - mask_b.size(0)
-                    mask_pad = torch.zeros(pad_len, device=attention_mask.device, dtype=attention_mask.dtype)
-                    mask_b = torch.cat([mask_b, mask_pad], dim=0)
-                padded_mask_list.append(mask_b)
             
             # Pad cos
             cos_b = new_cos_list[b]
@@ -603,16 +603,11 @@ class LanguageModel(nn.Module):
         
         # Empilhar de volta
         x_new = torch.stack(padded_x_list, dim=0)
-        
-        if attention_mask is not None:
-            attention_mask_new = torch.stack(padded_mask_list, dim=0)
-        else:
-            attention_mask_new = None
-            
         cos_new = torch.stack(padded_cos_list, dim=0)
         sin_new = torch.stack(padded_sin_list, dim=0)
         
-        return x_new, attention_mask_new, cos_new, sin_new
+        # Attention mask mantém o tamanho original
+        return x_new, new_attention_mask, cos_new, sin_new
 
 
     @torch.inference_mode()

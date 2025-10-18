@@ -49,18 +49,17 @@ class VisionLanguageModel(nn.Module):
         """
         num_original_visual_tokens = victor_info['num_original_visual_tokens']
         num_registers = victor_info['num_registers']
+        num_images_per_sample = victor_info['num_images_per_sample']  # Lista com número de imagens por amostra
         
         B, T = targets.size()
         # Pegar o comprimento exato dos logits após drop + padding
         target_seq_len = logits_shape[1]
         
-        image_token_mask = (input_ids == self.tokenizer.image_token_id)
-        
         new_targets_list = []
         
         for b in range(B):
-            num_placeholders = image_token_mask[b].sum().item()
-            num_images_in_sample = num_placeholders // num_original_visual_tokens if num_placeholders > 0 else 0
+            # Usar o número correto de imagens para esta amostra
+            num_images_in_sample = num_images_per_sample[b]
             
             if num_images_in_sample == 0:
                 # Sem imagens - apenas copiar e fazer padding para target_seq_len
@@ -138,7 +137,7 @@ class VisionLanguageModel(nn.Module):
             num_visual_tokens: Número de tokens visuais por imagem
             
         Returns:
-            Tuple de (token_embd_com_registros, attention_mask_atualizada)
+            Tuple de (token_embd_com_registros, attention_mask_atualizada, num_images_per_sample)
         """
         B, T, D = token_embd.size()
         
@@ -148,12 +147,14 @@ class VisionLanguageModel(nn.Module):
         # Para cada exemplo no batch, inserir registros
         new_embd_list = []
         new_mask_list = []
+        num_images_per_sample = []  # Guardar o número de imagens por amostra
         
         for b in range(B):
             # Contar quantas imagens temos
             # Total de placeholders / placeholders_por_imagem = número de imagens
             num_placeholders = image_token_mask[b].sum().item()
             num_images = num_placeholders // num_visual_tokens if num_placeholders > 0 else 0
+            num_images_per_sample.append(num_images)
             
             if num_images == 0:
                 # Sem imagens neste exemplo
@@ -235,7 +236,7 @@ class VisionLanguageModel(nn.Module):
         else:
             attention_mask_new = None
         
-        return token_embd_new, attention_mask_new, seq_lengths
+        return token_embd_new, attention_mask_new, seq_lengths, num_images_per_sample
     
     def _replace_img_tokens_with_embd(self, input_ids, token_embd, image_embd):
         """
@@ -280,13 +281,9 @@ class VisionLanguageModel(nn.Module):
             if self.cfg.use_victor:
                 num_original_visual_tokens = image_embd.size(1)
                 
-                # Número total de imagens = total de embeddings visuais processados
-                # Dividido por batch para obter imagens por amostra (assumindo uniforme)
-                total_images = images_tensor.size(0)
-                num_images_per_sample = total_images // input_ids.size(0)
-                
                 # Inserir registros após cada bloco de tokens visuais
-                token_embd, attention_mask, seq_lengths = self._insert_visual_registers(
+                # Agora também retorna o número de imagens por amostra
+                token_embd, attention_mask, seq_lengths, num_images_per_sample = self._insert_visual_registers(
                     token_embd, attention_mask, input_ids, num_original_visual_tokens
                 )
                 
@@ -294,7 +291,7 @@ class VisionLanguageModel(nn.Module):
                     'drop_layer': self.cfg.victor_drop_layer,
                     'num_original_visual_tokens': num_original_visual_tokens,
                     'num_registers': self.cfg.victor_num_registers,
-                    'num_images': num_images_per_sample,
+                    'num_images_per_sample': num_images_per_sample,  # Lista com número de imagens por amostra
                     'seq_lengths_before_drop': seq_lengths,  # Comprimentos antes de remover tokens visuais
                 }
 
@@ -334,12 +331,9 @@ class VisionLanguageModel(nn.Module):
             if self.cfg.use_victor:
                 num_original_visual_tokens = image_embd.size(1)
                 
-                # Número total de imagens = total de embeddings visuais processados
-                # Dividido por batch para obter imagens por amostra (assumindo uniforme)
-                total_images = images_tensor.size(0)
-                num_images_per_sample = total_images // input_ids.size(0)
-                
-                token_embd, attention_mask, seq_lengths = self._insert_visual_registers(
+                # Inserir registros após cada bloco de tokens visuais
+                # Agora também retorna o número de imagens por amostra
+                token_embd, attention_mask, seq_lengths, num_images_per_sample = self._insert_visual_registers(
                     token_embd, attention_mask, input_ids, num_original_visual_tokens
                 )
                 
@@ -347,7 +341,7 @@ class VisionLanguageModel(nn.Module):
                     'drop_layer': self.cfg.victor_drop_layer,
                     'num_original_visual_tokens': num_original_visual_tokens,
                     'num_registers': self.cfg.victor_num_registers,
-                    'num_images': num_images_per_sample,
+                    'num_images_per_sample': num_images_per_sample,  # Lista com número de imagens por amostra
                     'seq_lengths_before_drop': seq_lengths,
                 }
 

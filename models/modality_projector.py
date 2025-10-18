@@ -66,14 +66,14 @@ class VisualRegisters(nn.Module):
         # Registros aprendiveis inicializados aleatoriamente
         self.registers = nn.Parameter(torch.randn(1, self.num_registers, self.hidden_dim) * 0.02)
     
-    def forward(self, batch_size):
+    def forward(self, num_images):
         """
-        Retorna os registros visuais replicados para o tamanho do batch.
+        Retorna os registros visuais replicados para o número de imagens.
         
         Args:
-            batch_size (int): Tamanho do batch
+            num_images (int): Número de imagens para replicar os registros
             
         Returns:
-            torch.Tensor: Registros com shape [batch_size, num_registers, hidden_dim]
+            torch.Tensor: Registros com shape [num_images, num_registers, hidden_dim]
         """
-        return self.registers.expand(batch_size, -1, -1)
+        return self.registers.expand(num_images, -1, -1)
