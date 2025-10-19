@@ -65,6 +65,11 @@ class VisualRegisters(nn.Module):
         
         # Registros aprendiveis inicializados aleatoriamente
         self.registers = nn.Parameter(torch.randn(1, self.num_registers, self.hidden_dim) * 0.02)
+        # Gate aprendível para controlar a influência dos registros no início do treino
+        # Iniciar negativo para gate baixo (~0.1-0.2 após sigmoid)
+        self._gate = nn.Parameter(torch.tensor(-1.5))
+        # Normalização para manter escala estável ao injetar no LLM
+        self.norm = nn.LayerNorm(self.hidden_dim)
     
     def forward(self, num_images):
         """
@@ -76,4 +81,6 @@ class VisualRegisters(nn.Module):
         Returns:
             torch.Tensor: Registros com shape [num_images, num_registers, hidden_dim]
         """
-        return self.registers.expand(num_images, -1, -1)
+        gate = torch.sigmoid(self._gate)
+        regs = gate * self.norm(self.registers)
+        return regs.expand(num_images, -1, -1)

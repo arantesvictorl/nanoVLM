@@ -36,7 +36,8 @@ class ConstantLengthDataset(IterableDataset):
         self._sentinel = object()
         self._average_length_per_sample = (
             self.dataset.mp_image_token_length + 198
-        )  # 198 is the average tokens for the cauldron dataset
+            + (self.victor_num_registers * 8 if self.use_victor else 0)
+        )  # 198 is the average tokens for the cauldron dataset; add conservative overhead for VICTOR
 
     def __len__(self):
         return int(

@@ -42,8 +42,8 @@ class VLMConfig:
 
     # VICTOR: Visual Compact Token Registers
     use_victor: bool = True
-    victor_num_registers: int = 8
-    victor_drop_layer: int = 3
+    victor_num_registers: int = 2
+    victor_drop_layer: int = 0
 
     vlm_extra_tokens: dict[str, str] = field(default_factory=lambda: {"image_token": "<|image|>", "global_image_token": "<|global_image|>",
       "r1c1": "<row_1_col_1>", "r1c2": "<row_1_col_2>", "r1c3": "<row_1_col_3>", "r1c4": "<row_1_col_4>", "r1c5": "<row_1_col_5>", "r1c6": "<row_1_col_6>", "r1c7": "<row_1_col_7>", "r1c8": "<row_1_col_8>",
@@ -60,9 +60,9 @@ class VLMConfig:
 
 
 class TrainConfig:
-    lr_mp: float = 0.00512
-    lr_vision_backbone: float = 5e-5 #0.0005 #
-    lr_language_backbone: float = 5e-5 #0
+    lr_mp: float = 5e-3
+    lr_vision_backbone: float = 1e-5 #0.0005 #
+    lr_language_backbone: float = 1e-5 #0
     data_cutoff_idx: int = None
     val_ratio: float = 0.005
     batch_size: int = 1

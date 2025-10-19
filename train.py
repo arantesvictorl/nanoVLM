@@ -292,6 +292,9 @@ def train(train_cfg, vlm_cfg):
     param_groups = []
     if train_cfg.lr_mp > 0:
         param_groups.append({'params': list(model.MP.parameters()), 'lr': train_cfg.lr_mp})
+        # Incluir parâmetros dos registros VICTOR com o mesmo LR do MP (quando habilitado)
+        if hasattr(model, 'visual_registers') and model.visual_registers is not None:
+            param_groups.append({'params': list(model.visual_registers.parameters()), 'lr': train_cfg.lr_mp})
     else:
         for p in list(model.MP.parameters()):
             p.requires_grad = False
@@ -307,6 +310,15 @@ def train(train_cfg, vlm_cfg):
             p.requires_grad = False
 
     optimizer = optim.AdamW(param_groups)
+    # Scheduler com warmup + descongelamento progressivo simples
+    total_steps = train_cfg.max_training_steps
+    warmup_steps = max(1000, int(0.1 * total_steps))
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return max(1e-3, step / max(1, warmup_steps))  # warmup linear
+        # decaimento linear restante
+        return max(0.1, (total_steps - step) / max(1, total_steps - warmup_steps))
+    scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     all_params = [p for group in optimizer.param_groups for p in group['params']]
 
     device = (
@@ -409,6 +421,7 @@ def train(train_cfg, vlm_cfg):
                     optimizer.param_groups[param_group_idx]['lr'] = adj_lr_language_backbone
               
                 optimizer.step()
+                scheduler.step()
                 optimizer.zero_grad()
 
             batch_loss = loss.item()
