@@ -58,7 +58,7 @@ class VLMConfig:
     vlm_checkpoint_path: str = 'checkpoints'
     hf_repo_name: str = 'nanoVictor'
 
-
+@dataclass
 class TrainConfig:
     lr_mp: float = 0.00512
     lr_vision_backbone: float = 5e-5 #0.0005 #
