@@ -530,24 +530,25 @@ class LanguageModel(nn.Module):
             # Calcular quantos tokens visuais totais temos (V + R)
             total_visual_tokens = num_images * (num_original_visual_tokens + num_registers)
             
-            # Manter apenas os registros (R) e tokens de texto (T)
-            # Assumindo que tokens visuais vêm primeiro na sequência
+            # Nova ordem: [R, V, T] - manter apenas registros (R) e texto (T)
+            # Remover tokens visuais originais (V)
             keep_mask = torch.ones(T, dtype=torch.bool, device=x.device)
             
-            # Marcar tokens visuais originais (V) para remoção
-            # Manter apenas registros (R) e texto (T)
-            visual_start = 0
+            current_pos = 0
             for img_idx in range(num_images):
-                # Para cada imagem: remover V, manter R
-                visual_end = visual_start + num_original_visual_tokens
-                register_start = visual_end
-                register_end = register_start + num_registers
+                # Registros vêm primeiro: [R, V, T]
+                register_start = current_pos
+                register_end = current_pos + num_registers
                 
-                # Marcar V para remoção
+                # Tokens visuais vêm depois dos registros
+                visual_start = register_end
+                visual_end = visual_start + num_original_visual_tokens
+                
+                # Marcar tokens visuais (V) para remoção, manter registros (R)
                 keep_mask[visual_start:visual_end] = False
                 
-                # Manter R e T
-                visual_start = register_end
+                # Avançar para próxima imagem
+                current_pos = visual_end
             
             # Aplicar máscara
             new_x = x[b][keep_mask]
