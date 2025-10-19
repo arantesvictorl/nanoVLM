@@ -43,9 +43,8 @@ class VisionLanguageModel(nn.Module):
 
     def _adjust_targets_for_victor(self, targets, victor_info, input_ids, logits_shape):
         """
-        Ajusta os targets pós-VICTOR de forma direta: para cada imagem, adiciona
-        `num_registers` posições com -100 e mantém somente os tokens de texto.
-        Usa o comprimento de `logits_shape[1]` para pad/truncate.
+        Ajusta targets para corresponder exatamente ao drop de tokens visuais.
+        Remove tokens visuais originais (V) e mantém apenas registros (R) + texto (T).
         """
         num_original_visual_tokens = victor_info['num_original_visual_tokens']
         num_registers = victor_info['num_registers']
@@ -58,6 +57,7 @@ class VisionLanguageModel(nn.Module):
         for b in range(B):
             n_img = num_images_per_sample[b]
             if n_img == 0:
+                # Sem imagens, manter targets originais
                 t = targets[b]
                 if t.size(0) < target_seq_len:
                     pad_len = target_seq_len - t.size(0)
@@ -67,16 +67,25 @@ class VisionLanguageModel(nn.Module):
                 new_targets_list.append(t)
                 continue
 
+            # Tokens visuais originais (V) são removidos, registros (R) são mantidos
             visual_total = n_img * num_original_visual_tokens
-            text_targets = targets[b, visual_total:]
-            regs = torch.full((n_img * num_registers,), -100, dtype=targets.dtype, device=targets.device)
-            merged = torch.cat([regs, text_targets], dim=0)
+            register_total = n_img * num_registers
+            
+            # Manter apenas registros (R) + texto (T)
+            # Registros vêm primeiro, depois texto
+            register_targets = torch.full((register_total,), -100, dtype=targets.dtype, device=targets.device)
+            text_targets = targets[b, visual_total:]  # Pular tokens visuais originais
+            
+            # Concatenar: [R] + [T]
+            merged = torch.cat([register_targets, text_targets], dim=0)
 
+            # Ajustar comprimento
             if merged.size(0) < target_seq_len:
                 pad_len = target_seq_len - merged.size(0)
                 merged = torch.cat([merged, torch.full((pad_len,), -100, dtype=targets.dtype, device=targets.device)], dim=0)
             else:
                 merged = merged[:target_seq_len]
+            
             new_targets_list.append(merged)
 
         return torch.stack(new_targets_list, dim=0)

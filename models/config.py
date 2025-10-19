@@ -30,8 +30,8 @@ class VLMConfig:
     lm_max_length: int = 8192
     lm_use_tokens: bool = False # Decide if the LM expects tokens or embeddings as input (if using as a backbone for the VLM, set to False)
     lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embedding weights
-    lm_model_type: str = 'HuggingFaceTB/SmolLM2-135M-Instruct' #'HuggingFaceTB/SmolLM2-135M' #
-    lm_tokenizer: str = 'HuggingFaceTB/SmolLM2-135M-Instruct'
+    lm_model_type: str = 'HuggingFaceTB/SmolLM2-360M-Instruct' #'HuggingFaceTB/SmolLM2-135M' #
+    lm_tokenizer: str = 'HuggingFaceTB/SmolLM2-360M-Instruct'
     lm_chat_template: str = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 
     mp_pixel_shuffle_factor: int = 4
@@ -42,8 +42,8 @@ class VLMConfig:
 
     # VICTOR: Visual Compact Token Registers
     use_victor: bool = True
-    victor_num_registers: int = 2
-    victor_drop_layer: int = 0
+    victor_num_registers: int = 8
+    victor_drop_layer: int = 3
 
     vlm_extra_tokens: dict[str, str] = field(default_factory=lambda: {"image_token": "<|image|>", "global_image_token": "<|global_image|>",
       "r1c1": "<row_1_col_1>", "r1c2": "<row_1_col_2>", "r1c3": "<row_1_col_3>", "r1c4": "<row_1_col_4>", "r1c5": "<row_1_col_5>", "r1c6": "<row_1_col_6>", "r1c7": "<row_1_col_7>", "r1c8": "<row_1_col_8>",
@@ -60,9 +60,9 @@ class VLMConfig:
 
 
 class TrainConfig:
-    lr_mp: float = 5e-3
-    lr_vision_backbone: float = 1e-5 #0.0005 #
-    lr_language_backbone: float = 1e-5 #0
+    lr_mp: float = 0.00512
+    lr_vision_backbone: float = 5e-5 #0.0005 #
+    lr_language_backbone: float = 5e-5 #0
     data_cutoff_idx: int = None
     val_ratio: float = 0.005
     batch_size: int = 1

@@ -10,7 +10,12 @@ class ModalityProjector(nn.Module):
         self.output_dim = cfg.lm_hidden_dim
         self.scale_factor = cfg.mp_pixel_shuffle_factor
 
-        self.proj = nn.Linear(self.input_dim, self.output_dim, bias=False)
+        self.proj = nn.Sequential(
+            nn.Linear(self.input_dim, self.output_dim, bias=False),
+            nn.GELU(),
+            nn.Linear(self.output_dim, self.output_dim, bias=False),
+            nn.LayerNorm(self.output_dim)
+        )
         
         self.apply(self._init_weights)
 
