@@ -527,10 +527,6 @@ class LanguageModel(nn.Module):
                     new_attention_masks.append(attention_mask[b])
                 continue
             
-            # Debug: verificar tamanhos
-            print(f"Debug - Batch {b}: x.shape={x[b].shape}, attention_mask.shape={attention_mask[b].shape if attention_mask is not None else None}")
-            print(f"Debug - num_images={num_images}, num_registers={num_registers}, num_original_visual_tokens={num_original_visual_tokens}")
-            
             # Nova ordem: [R, V, T] - manter apenas registros (R) e texto (T)
             # Remover tokens visuais originais (V)
             keep_mask = torch.ones(T, dtype=torch.bool, device=x.device)
@@ -547,18 +543,13 @@ class LanguageModel(nn.Module):
                 
                 # Verificar se não ultrapassamos o tamanho da sequência
                 if visual_end > T:
-                    print(f"Debug - Breaking at img {img_idx}, visual_end={visual_end} > T={T}")
                     break
-                
-                print(f"Debug - Img {img_idx}: registers[{register_start}:{register_end}], visual[{visual_start}:{visual_end}]")
                 
                 # Marcar tokens visuais (V) para remoção, manter registros (R)
                 keep_mask[visual_start:visual_end] = False
                 
                 # Avançar para próxima imagem (pular registros + visuais)
                 current_pos = visual_end
-            
-            print(f"Debug - Final keep_mask: {keep_mask.sum().item()}/{T} tokens kept")
             
             # Aplicar máscara
             new_x = x[b][keep_mask]
@@ -570,18 +561,18 @@ class LanguageModel(nn.Module):
             new_sin_list.append(new_sin)
             
             if attention_mask is not None:
-                # Verificar se attention_mask tem o mesmo tamanho
-                if attention_mask[b].shape[0] != T:
-                    print(f"Debug - Attention mask size mismatch: {attention_mask[b].shape[0]} vs {T}")
-                    # Ajustar attention_mask para o tamanho correto
-                    if attention_mask[b].shape[0] > T:
-                        attention_mask_b = attention_mask[b][:T]
+                # Ajustar attention_mask para o tamanho correto do tensor x
+                attention_mask_b = attention_mask[b]
+                if attention_mask_b.shape[0] != T:
+                    if attention_mask_b.shape[0] > T:
+                        attention_mask_b = attention_mask_b[:T]
                     else:
                         # Pad attention_mask
-                        pad_len = T - attention_mask[b].shape[0]
-                        attention_mask_b = torch.cat([attention_mask[b], torch.zeros(pad_len, device=attention_mask[b].device, dtype=attention_mask[b].dtype)])
-                else:
-                    attention_mask_b = attention_mask[b]
+                        pad_len = T - attention_mask_b.shape[0]
+                        attention_mask_b = torch.cat([
+                            attention_mask_b, 
+                            torch.zeros(pad_len, device=attention_mask_b.device, dtype=attention_mask_b.dtype)
+                        ])
                 
                 new_attn_mask = attention_mask_b[keep_mask]
                 new_attention_masks.append(new_attn_mask)
