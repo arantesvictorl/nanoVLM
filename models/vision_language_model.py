@@ -130,12 +130,19 @@ class VisionLanguageModel(nn.Module):
             else:
                 attn_mask_short = None
             
-            position_ids_short = torch.arange(T_short, device=h.device).unsqueeze(0).expand(B, -1)
+            position_ids_short = []
+            for b in range(B):
+                pos = first_img_pos[b].item()
+                pos_ids = torch.cat([
+                    torch.arange(pos, device=h.device),
+                    torch.arange(pos+N_v, pos+N_v+R, device=h.device),
+                    torch.arange(pos+N_v+R, position_ids_full.size(1), device=h.device)
+                ])
+                position_ids_short.append(pos_ids)
+            position_ids_short = torch.stack(position_ids_short, dim=0)
             cos_short, sin_short = self.decoder.rotary_embd(position_ids_short)
             
-            for i in range(k, len(self.decoder.blocks)):
-                kv_cache = [None] * len(self.decoder.blocks)
-            
+            kv_cache = [None] * len(self.decoder.blocks)
             h, _ = self.decoder.forward_blocks(h, cos_short, sin_short, attn_mask_short, kv_cache, k, None)
             logits = self.decoder.norm(h)
             
