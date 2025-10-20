@@ -12,7 +12,7 @@ class VLMConfig:
     vit_n_blocks: int = 12
     vit_ln_eps: float = 1e-6
     vit_cls_flag: bool = False
-    vit_model_type: str = 'google/siglip2-base-patch16-512'
+    vit_model_type: str = 'google/siglip-base-patch16-224'
 
     lm_hidden_dim: int = 960
     lm_inter_dim: int = 2560
@@ -30,12 +30,18 @@ class VLMConfig:
     lm_max_length: int = 8192
     lm_use_tokens: bool = False # Decide if the LM expects tokens or embeddings as input (if using as a backbone for the VLM, set to False)
     lm_tie_weights: bool = True # Decide if you want to tie the LM Head weight to the token embedding weights
-    lm_model_type: str = 'HuggingFaceTB/SmolLM2-360M-Instruct' #'HuggingFaceTB/SmolLM2-135M' #
-    lm_tokenizer: str = 'HuggingFaceTB/SmolLM2-360M-Instruct'
+    lm_model_type: str = 'HuggingFaceTB/SmolLM2-135M-Instruct' #'HuggingFaceTB/SmolLM2-135M' #
+    lm_tokenizer: str = 'HuggingFaceTB/SmolLM2-135M-Instruct'
     lm_chat_template: str = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 
     mp_pixel_shuffle_factor: int = 4
     mp_image_token_length: int = 64
+
+    use_victor: bool = True
+    num_registers: int = 8
+    k_fuse_layers: int = 3
+    freeze_llm_steps: int = 2000
+    lr_projector: float = 2e-4
 
     max_img_size: int = 2048
     resize_to_max_side_len: bool = True
@@ -51,7 +57,7 @@ class VLMConfig:
       "r8c1": "<row_8_col_1>", "r8c2": "<row_8_col_2>", "r8c3": "<row_8_col_3>", "r8c4": "<row_8_col_4>", "r8c5": "<row_8_col_5>", "r8c6": "<row_8_col_6>", "r8c7": "<row_8_col_7>", "r8c8": "<row_8_col_8>"})
     vlm_load_backbone_weights: bool = True
     vlm_checkpoint_path: str = 'checkpoints'
-    hf_repo_name: str = 'nanoVLM'
+    hf_repo_name: str = 'victor-alt'
 
 
 @dataclass
@@ -67,19 +73,19 @@ class TrainConfig:
     eval_in_epochs: bool = True
     eval_interval: int = 500
     stats_log_interval: int = 100
-    max_training_steps: int = 80100
+    max_training_steps: int = 500
     max_images_per_example: int = 8
     max_images_per_knapsack: int = 36
     max_sample_length: int = 8192
     compile: bool = False
     resume_from_vlm_checkpoint: bool = False # Indicate if the training should be resumed from a checkpoint of the whole VLM or you want to start from scratch
-    train_dataset_path: str = '/fsx/luis_wiedmann/datasets/asterix_rated'
-    train_dataset_name: tuple[str, ...] = ("all", ) #('allava_laion', 'allava_vflan', 'cambrian(filtered)_processed', 'LLaVA_Instruct_150K', 'mmevol', 'sharegpt4o', 'sharegpt4v(coco)', 'sharegpt4v(knowledge)', 'sharegpt4v(llava)', 'sharegpt4v(sam)') # 'vision_flan(filtered)', 'lvis_instruct4v',
+    train_dataset_path: str = 'HuggingFaceH/the-cauldron'
+    train_dataset_name: tuple[str, ...] = ("tqa", ) #('allava_laion', 'allava_vflan', 'cambrian(filtered)_processed', 'LLaVA_Instruct_150K', 'mmevol', 'sharegpt4o', 'sharegpt4v(coco)', 'sharegpt4v(knowledge)', 'sharegpt4v(llava)', 'sharegpt4v(sam)') # 'vision_flan(filtered)', 'lvis_instruct4v',
     relevance_min_rating: int = 1
     image_correspondence_min_rating: int = 1
     visual_dependency_min_rating: int = 1
     formatting_min_rating: int = 1
-    wandb_entity: str = "HuggingFace" # Indicate the entity to log to in wandb
+    wandb_entity: str = "arantesvictorl-ufg" # Indicate the entity to log to in wandb
     log_wandb: bool = True
     use_lmms_eval: bool = True # Use lmms-eval for evaluation
     lmms_eval_tasks: str = 'mmstar,mmmu,ocrbench,textvqa,docvqa,scienceqa,mme,infovqa' # Pass additional task as one string, seperated by commas without spaces (e.g. 'mmstar,mmmu,ocrbench')

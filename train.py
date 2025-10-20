@@ -286,26 +286,46 @@ def train(train_cfg, vlm_cfg):
             print(f"Validation summary per GPU: {len(val_loader)} batches/epoch, batch size {val_loader.batch_size}")
 
     # Define optimizer groups
-    # Since we have pretrained vision and language backbones, but a newly initialized modality projection layer, it doesn't make sense to train them with the same learning rate
-    # You could opt to fully freeze the backbones and only train the MP layer, but finetuning them with a lower learning rate makes the training as a whole easier
     param_groups = []
-    if train_cfg.lr_mp > 0:
-        param_groups.append({'params': list(model.MP.parameters()), 'lr': train_cfg.lr_mp})
+    
+    if vlm_cfg.use_victor:
+        if vlm_cfg.lr_projector > 0:
+            mp_params = [p for name, p in model.MP.named_parameters() if 'registers' not in name]
+            param_groups.append({'params': mp_params, 'lr': vlm_cfg.lr_projector, 'name': 'projector'})
+            param_groups.append({'params': [model.MP.registers], 'lr': vlm_cfg.lr_projector, 'name': 'registers'})
+        else:
+            for p in model.MP.parameters():
+                p.requires_grad = False
+        
+        if train_cfg.lr_vision_backbone > 0:
+            param_groups.append({'params': list(model.vision_encoder.parameters()), 'lr': train_cfg.lr_vision_backbone, 'name': 'vision'})
+        else:
+            for p in model.vision_encoder.parameters():
+                p.requires_grad = False
+        
+        if train_cfg.lr_language_backbone > 0:
+            param_groups.append({'params': list(model.decoder.parameters()), 'lr': 0.0, 'name': 'language', 'base_lr': train_cfg.lr_language_backbone})
+        else:
+            for p in model.decoder.parameters():
+                p.requires_grad = False
     else:
-        for p in list(model.MP.parameters()):
-            p.requires_grad = False
-    if train_cfg.lr_vision_backbone > 0:
-        param_groups.append({'params': list(model.vision_encoder.parameters()), 'lr': train_cfg.lr_vision_backbone})
-    else:
-        for p in list(model.vision_encoder.parameters()):
-            p.requires_grad = False
-    if train_cfg.lr_language_backbone > 0:
-        param_groups.append({'params': list(model.decoder.parameters()), 'lr': train_cfg.lr_language_backbone})
-    else:
-        for p in list(model.decoder.parameters()):
-            p.requires_grad = False
+        if train_cfg.lr_mp > 0:
+            param_groups.append({'params': list(model.MP.parameters()), 'lr': train_cfg.lr_mp})
+        else:
+            for p in list(model.MP.parameters()):
+                p.requires_grad = False
+        if train_cfg.lr_vision_backbone > 0:
+            param_groups.append({'params': list(model.vision_encoder.parameters()), 'lr': train_cfg.lr_vision_backbone})
+        else:
+            for p in list(model.vision_encoder.parameters()):
+                p.requires_grad = False
+        if train_cfg.lr_language_backbone > 0:
+            param_groups.append({'params': list(model.decoder.parameters()), 'lr': train_cfg.lr_language_backbone})
+        else:
+            for p in list(model.decoder.parameters()):
+                p.requires_grad = False
 
-    optimizer = optim.AdamW(param_groups)
+    optimizer = optim.AdamW(param_groups, weight_decay=0.05, betas=(0.9, 0.98))
     all_params = [p for group in optimizer.param_groups for p in group['params']]
 
     device = (
@@ -392,20 +412,33 @@ def train(train_cfg, vlm_cfg):
                 if train_cfg.max_grad_norm is not None:
                     grad_norm = torch.nn.utils.clip_grad_norm_(all_params, max_norm=train_cfg.max_grad_norm)
 
-                param_group_idx = 0
-                if train_cfg.lr_mp > 0:
-                    adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, train_cfg.max_training_steps)
-                    optimizer.param_groups[param_group_idx]['lr'] = adj_lr_mp
-                    param_group_idx += 1
+                if vlm_cfg.use_victor:
+                    for param_group in optimizer.param_groups:
+                        if param_group.get('name') == 'projector' or param_group.get('name') == 'registers':
+                            param_group['lr'] = get_lr(global_step, vlm_cfg.lr_projector, train_cfg.max_training_steps)
+                        elif param_group.get('name') == 'vision':
+                            param_group['lr'] = get_lr(global_step, train_cfg.lr_vision_backbone, train_cfg.max_training_steps)
+                        elif param_group.get('name') == 'language':
+                            if global_step >= vlm_cfg.freeze_llm_steps:
+                                base_lr = param_group.get('base_lr', train_cfg.lr_language_backbone)
+                                param_group['lr'] = get_lr(global_step, base_lr, train_cfg.max_training_steps)
+                            else:
+                                param_group['lr'] = 0.0
+                else:
+                    param_group_idx = 0
+                    if train_cfg.lr_mp > 0:
+                        adj_lr_mp = get_lr(global_step, train_cfg.lr_mp, train_cfg.max_training_steps)
+                        optimizer.param_groups[param_group_idx]['lr'] = adj_lr_mp
+                        param_group_idx += 1
 
-                if train_cfg.lr_vision_backbone > 0:
-                    adj_lr_vision_backbone = get_lr(global_step, train_cfg.lr_vision_backbone, train_cfg.max_training_steps)
-                    optimizer.param_groups[param_group_idx]['lr'] = adj_lr_vision_backbone
-                    param_group_idx += 1
+                    if train_cfg.lr_vision_backbone > 0:
+                        adj_lr_vision_backbone = get_lr(global_step, train_cfg.lr_vision_backbone, train_cfg.max_training_steps)
+                        optimizer.param_groups[param_group_idx]['lr'] = adj_lr_vision_backbone
+                        param_group_idx += 1
 
-                if train_cfg.lr_language_backbone > 0:
-                    adj_lr_language_backbone = get_lr(global_step, train_cfg.lr_language_backbone, train_cfg.max_training_steps)
-                    optimizer.param_groups[param_group_idx]['lr'] = adj_lr_language_backbone
+                    if train_cfg.lr_language_backbone > 0:
+                        adj_lr_language_backbone = get_lr(global_step, train_cfg.lr_language_backbone, train_cfg.max_training_steps)
+                        optimizer.param_groups[param_group_idx]['lr'] = adj_lr_language_backbone
               
                 optimizer.step()
                 optimizer.zero_grad()

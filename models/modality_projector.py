@@ -1,4 +1,5 @@
 # Modality Projection from Vision to Language
+import torch
 import torch.nn as nn
 
 class ModalityProjector(nn.Module):
@@ -8,14 +9,25 @@ class ModalityProjector(nn.Module):
         self.input_dim = cfg.vit_hidden_dim * (cfg.mp_pixel_shuffle_factor**2)
         self.output_dim = cfg.lm_hidden_dim
         self.scale_factor = cfg.mp_pixel_shuffle_factor
+        self.use_victor = cfg.use_victor
 
-        self.proj = nn.Linear(self.input_dim, self.output_dim, bias=False)
+        if self.use_victor:
+            self.num_registers = cfg.num_registers
+            self.registers = nn.Parameter(torch.randn(self.num_registers, self.output_dim) * 0.01)
+            self.proj = nn.Sequential(
+                nn.Linear(self.input_dim, self.output_dim),
+                nn.GELU(),
+                nn.Linear(self.output_dim, self.output_dim),
+                nn.LayerNorm(self.output_dim)
+            )
+        else:
+            self.proj = nn.Linear(self.input_dim, self.output_dim, bias=False)
         
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_(self.proj.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
@@ -41,6 +53,7 @@ class ModalityProjector(nn.Module):
         x = self.pixel_shuffle(x)
         x = self.proj(x)
 
+        if self.use_victor:
+            return x, self.registers
         return x
-
     

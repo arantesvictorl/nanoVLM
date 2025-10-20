@@ -61,20 +61,95 @@ class VisionLanguageModel(nn.Module):
 
     def forward(self, input_ids, images, attention_mask=None, targets=None):
         images_tensor = self._process_images(images, input_ids.device)
-        token_embd = self.decoder.token_embedding(input_ids) # [B, T_sequence, D_lm]
-
-        if images_tensor is not None:
+        token_embd = self.decoder.token_embedding(input_ids)
+        B = token_embd.size(0)
+        
+        if images_tensor is not None and self.cfg.use_victor:
             image_embd = self.vision_encoder(images_tensor)
-            image_embd = self.MP(image_embd)  # [num_images, mp_image_token_length, D_lm]
+            v_proj, registers = self.MP(image_embd)
+            N_v = v_proj.size(1)
+            R = registers.size(0)
+            
+            registers_expanded = registers.unsqueeze(0).expand(B, -1, -1)
+            token_embd_with_img = self._replace_img_tokens_with_embd(input_ids, token_embd, v_proj)
+            
+            img_mask = (input_ids == self.tokenizer.image_token_id)
+            first_img_pos = img_mask.float().argmax(dim=1)
+            
+            result_embd = []
+            for b in range(B):
+                pos = first_img_pos[b].item()
+                seq = torch.cat([
+                    token_embd_with_img[b, :pos],
+                    v_proj[b],
+                    registers_expanded[b],
+                    token_embd_with_img[b, pos+N_v:]
+                ], dim=0)
+                result_embd.append(seq)
+            
+            x0 = torch.stack(result_embd, dim=0)
+            T_full = x0.size(1)
+            N_t = token_embd.size(1) - N_v
+            
+            if attention_mask is not None:
+                attn_mask_full = torch.ones((B, T_full), device=x0.device, dtype=attention_mask.dtype)
+                for b in range(B):
+                    pos = first_img_pos[b].item()
+                    orig_mask = attention_mask[b]
+                    attn_mask_full[b, :pos] = orig_mask[:pos]
+                    attn_mask_full[b, pos:pos+N_v+R] = 1
+                    attn_mask_full[b, pos+N_v+R:] = orig_mask[pos+N_v:]
+            else:
+                attn_mask_full = None
+            
+            position_ids_full = torch.arange(T_full, device=x0.device).unsqueeze(0).expand(B, -1)
+            cos_full, sin_full = self.decoder.rotary_embd(position_ids_full)
+            
+            k = self.cfg.k_fuse_layers
+            h, kv_cache = self.decoder.forward_blocks(x0, cos_full, sin_full, attn_mask_full, None, 0, k)
+            
+            h_cut = []
+            for b in range(B):
+                pos = first_img_pos[b].item()
+                h_cut.append(torch.cat([
+                    h[b, :pos],
+                    h[b, pos+N_v:pos+N_v+R],
+                    h[b, pos+N_v+R:]
+                ], dim=0))
+            h = torch.stack(h_cut, dim=0)
+            
+            T_short = h.size(1)
+            if attention_mask is not None:
+                attn_mask_short = torch.ones((B, T_short), device=h.device, dtype=attention_mask.dtype)
+                for b in range(B):
+                    pos = first_img_pos[b].item()
+                    orig_mask = attention_mask[b]
+                    attn_mask_short[b, :pos] = orig_mask[:pos]
+                    attn_mask_short[b, pos:pos+R] = 1
+                    attn_mask_short[b, pos+R:] = orig_mask[pos+N_v:]
+            else:
+                attn_mask_short = None
+            
+            position_ids_short = torch.arange(T_short, device=h.device).unsqueeze(0).expand(B, -1)
+            cos_short, sin_short = self.decoder.rotary_embd(position_ids_short)
+            
+            for i in range(k, len(self.decoder.blocks)):
+                kv_cache = [None] * len(self.decoder.blocks)
+            
+            h, _ = self.decoder.forward_blocks(h, cos_short, sin_short, attn_mask_short, kv_cache, k, None)
+            logits = self.decoder.norm(h)
+            
+        elif images_tensor is not None:
+            image_embd = self.vision_encoder(images_tensor)
+            image_embd = self.MP(image_embd)
             token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
-
-        logits, _ = self.decoder(token_embd, attention_mask=attention_mask)
+            logits, _ = self.decoder(token_embd, attention_mask=attention_mask)
+        else:
+            logits, _ = self.decoder(token_embd, attention_mask=attention_mask)
 
         loss = None
         if targets is not None:
-            logits = self.decoder.head(logits) # Apply LM head
-            # Loss is calculated over all tokens, but `targets` (labels) will have -100 for non-answer tokens.
-            # No need to slice logits based on image embedding size here, as the target mask handles it.
+            logits = self.decoder.head(logits)
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
 
         return logits, loss
@@ -82,22 +157,52 @@ class VisionLanguageModel(nn.Module):
     @torch.inference_mode()
     def generate(self, input_ids, images, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
         images_tensor = self._process_images(images, input_ids.device)
-        token_embd = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
+        token_embd = self.decoder.token_embedding(input_ids)
+        batch_size = input_ids.size(0)
 
-        if images_tensor is not None:
-            # 1. Process image if present
-            image_embd = self.vision_encoder(images_tensor) # [B, T_img_feat, D_model]
-            image_embd = self.MP(image_embd)      # [B, mp_image_token_length, D_lm]
-            # 2. Combine image and text embeddings
+        if images_tensor is not None and self.cfg.use_victor:
+            image_embd = self.vision_encoder(images_tensor)
+            _, registers = self.MP(image_embd)
+            
+            registers_expanded = registers.unsqueeze(0).expand(batch_size, -1, -1)
+            
+            img_mask = (input_ids == self.tokenizer.image_token_id)
+            first_img_pos = img_mask.float().argmax(dim=1)
+            
+            result_embd = []
+            for b in range(batch_size):
+                pos = first_img_pos[b].item()
+                N_v = (input_ids[b] == self.tokenizer.image_token_id).sum().item()
+                seq = torch.cat([
+                    token_embd[b, :pos],
+                    registers_expanded[b],
+                    token_embd[b, pos+N_v:]
+                ], dim=0)
+                result_embd.append(seq)
+            
+            token_embd = torch.stack(result_embd, dim=0)
+            
+            if attention_mask is not None:
+                R = registers.size(0)
+                attn_mask_new = torch.ones((batch_size, token_embd.size(1)), device=token_embd.device, dtype=attention_mask.dtype)
+                for b in range(batch_size):
+                    pos = first_img_pos[b].item()
+                    N_v = (input_ids[b] == self.tokenizer.image_token_id).sum().item()
+                    orig_mask = attention_mask[b]
+                    attn_mask_new[b, :pos] = orig_mask[:pos]
+                    attn_mask_new[b, pos:pos+R] = 1
+                    attn_mask_new[b, pos+R:] = orig_mask[pos+N_v:]
+                attention_mask = attn_mask_new
+        elif images_tensor is not None:
+            image_embd = self.vision_encoder(images_tensor)
+            image_embd = self.MP(image_embd)
             token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
 
         current_total_seq_len = token_embd.size(1)
-        batch_size = input_ids.size(0) # Or token_embd.size(0)
         
-        # --- Multimodal Prefill Phase ---
         prefill_output, kv_cache_list = self.decoder(
             token_embd,
-            attention_mask=attention_mask, # Use the provided attention mask
+            attention_mask=attention_mask,
             kv_cache=None,
             start_pos=0
         )

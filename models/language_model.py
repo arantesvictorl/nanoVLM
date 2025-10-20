@@ -416,6 +416,18 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
+    def forward_blocks(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start: int=0, end: int=None):
+        if end is None:
+            end = len(self.blocks)
+        
+        if kv_cache is None:
+            kv_cache = [None] * len(self.blocks)
+        
+        for i in range(start, end):
+            x, kv_cache[i] = self.blocks[i](x, cos, sin, attention_mask, kv_cache[i])
+        
+        return x, kv_cache
+
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0):
         """
         Performs a forward pass through the language model.
