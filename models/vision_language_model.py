@@ -67,14 +67,14 @@ class VisionLanguageModel(nn.Module):
                 new_targets_list.append(t)
                 continue
 
-            # Nova ordem: [R, V, T] - remover V, manter R + T
+            # Ordem original: [V, R, T] - remover V, manter R + T
             visual_total = n_img * num_original_visual_tokens
             register_total = n_img * num_registers
             
-            # Na nova ordem, registros vêm ANTES dos visuais
-            # Então precisamos pular: registros + visuais = register_total + visual_total
-            skip_total = register_total + visual_total
-            text_targets = targets[b, skip_total:]  # Pular registros + visuais
+            # Na ordem original, visuais vêm ANTES dos registros
+            # Então precisamos pular: visuais + registros = visual_total + register_total
+            skip_total = visual_total + register_total
+            text_targets = targets[b, skip_total:]  # Pular visuais + registros
             
             # Manter apenas registros (R) + texto (T)
             # Registros têm labels = -100 (não supervisionados)
@@ -96,8 +96,8 @@ class VisionLanguageModel(nn.Module):
     
     def _insert_visual_registers(self, token_embd, attention_mask, input_ids, num_visual_tokens):
         """
-        Insere registros visuais ANTES de cada bloco de tokens visuais na sequência.
-        Nova ordem: [R, V, T] em vez de [V, R, T]
+        Insere registros visuais APÓS cada bloco de tokens visuais na sequência.
+        Ordem original: [V, R, T] - mais estável
         
         Args:
             token_embd: Tensor de embeddings [B, T, D]
@@ -120,7 +120,6 @@ class VisionLanguageModel(nn.Module):
         
         for b in range(B):
             # Contar quantas imagens temos
-            # Total de placeholders / placeholders_por_imagem = número de imagens
             num_placeholders = image_token_mask[b].sum().item()
             num_images = num_placeholders // num_visual_tokens if num_placeholders > 0 else 0
             num_images_per_sample.append(num_images)
@@ -132,46 +131,29 @@ class VisionLanguageModel(nn.Module):
                     new_mask_list.append(attention_mask[b])
                 continue
             
-            # Extrair tokens visuais para compressão
-            visual_tokens_list = []
-            current_pos = 0
+            # Obter registros simples para este exemplo
+            registers = self.visual_registers(num_images)  # [num_images, num_registers, D]
             
-            for img_idx in range(num_images):
-                visual_start = current_pos
-                visual_end = current_pos + num_visual_tokens
-                visual_tokens_list.append(token_embd[b, visual_start:visual_end])
-                current_pos = visual_end
-            
-            # Concatenar todos os tokens visuais para compressão
-            all_visual_tokens = torch.cat(visual_tokens_list, dim=0)  # [total_visual_tokens, D]
-            all_visual_tokens = all_visual_tokens.unsqueeze(0)  # [1, total_visual_tokens, D]
-            
-            # Comprimir tokens visuais em registros usando atenção
-            registers = self.visual_registers(all_visual_tokens, num_images)  # [1, num_registers, D]
-            registers = registers.squeeze(0)  # [num_registers, D]
-            
-            # Nova ordem: [R, V, T] - registros ANTES dos tokens visuais
+            # Ordem original: [V, R, T] - tokens visuais PRIMEIRO, depois registros
             parts = []
             mask_parts = []
             current_pos = 0
             
             for img_idx in range(num_images):
-                # Adicionar registros PRIMEIRO (nova ordem: [R, V, T])
-                register_start = img_idx * self.cfg.victor_num_registers
-                register_end = register_start + self.cfg.victor_num_registers
-                parts.append(registers[register_start:register_end])
-                
-                # Depois adicionar tokens visuais
+                # Adicionar tokens visuais PRIMEIRO
                 visual_start = current_pos
                 visual_end = current_pos + num_visual_tokens
                 parts.append(token_embd[b, visual_start:visual_end])
                 
+                # Depois adicionar registros
+                parts.append(registers[img_idx])  # [num_registers, D]
+                
                 # Atualizar attention mask
                 if attention_mask is not None:
-                    # Registros têm attention = 1
-                    mask_parts.append(torch.ones(self.cfg.victor_num_registers, device=attention_mask.device))
                     # Tokens visuais mantêm mask original
                     mask_parts.append(attention_mask[b, visual_start:visual_end])
+                    # Registros têm attention = 1
+                    mask_parts.append(torch.ones(self.cfg.victor_num_registers, device=attention_mask.device))
                 
                 current_pos = visual_end
             

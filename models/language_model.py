@@ -527,29 +527,29 @@ class LanguageModel(nn.Module):
                     new_attention_masks.append(attention_mask[b])
                 continue
             
-            # Nova ordem: [R, V, T] - manter apenas registros (R) e texto (T)
+            # Ordem original: [V, R, T] - manter apenas registros (R) e texto (T)
             # Remover tokens visuais originais (V)
             keep_mask = torch.ones(T, dtype=torch.bool, device=x.device)
             
             current_pos = 0
             for img_idx in range(num_images):
-                # Registros vêm primeiro: [R, V, T]
-                register_start = current_pos
-                register_end = current_pos + num_registers
+                # Tokens visuais vêm primeiro: [V, R, T]
+                visual_start = current_pos
+                visual_end = current_pos + num_original_visual_tokens
                 
-                # Tokens visuais vêm depois dos registros
-                visual_start = register_end
-                visual_end = visual_start + num_original_visual_tokens
+                # Registros vêm depois dos visuais
+                register_start = visual_end
+                register_end = register_start + num_registers
                 
                 # Verificar se não ultrapassamos o tamanho da sequência
-                if visual_end > T:
+                if register_end > T:
                     break
                 
                 # Marcar tokens visuais (V) para remoção, manter registros (R)
                 keep_mask[visual_start:visual_end] = False
                 
-                # Avançar para próxima imagem (pular registros + visuais)
-                current_pos = visual_end
+                # Avançar para próxima imagem (pular visuais + registros)
+                current_pos = register_end
             
             # Aplicar máscara
             new_x = x[b][keep_mask]

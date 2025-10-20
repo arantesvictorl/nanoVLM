@@ -52,10 +52,10 @@ class ModalityProjector(nn.Module):
 
 class VisualRegisters(nn.Module):
     """
-    Visual Compact Token Registers para sumarizar tokens visuais.
+    Visual Compact Token Registers - Versão Simplificada
     
-    Implementa registros aprendíveis que comprimem informação visual através
-    de atenção com tokens visuais, seguindo o conceito de "Visual Compact Token Registers".
+    Registros aprendíveis que funcionam como "sumarizadores" dos tokens visuais.
+    Versão mais simples e estável para debug.
     
     Args:
         cfg: Configuracao contendo:
@@ -67,59 +67,33 @@ class VisualRegisters(nn.Module):
         self.num_registers = cfg.victor_num_registers
         self.hidden_dim = cfg.lm_hidden_dim
         
-        # Registros aprendiveis inicializados aleatoriamente
+        # Registros aprendiveis - versão simples
         self.registers = nn.Parameter(torch.randn(1, self.num_registers, self.hidden_dim) * 0.02)
         
-        # Mecanismo de atenção para comprimir tokens visuais
-        self.attention = nn.MultiheadAttention(
-            embed_dim=self.hidden_dim,
-            num_heads=8,  # Ajustar conforme necessário
-            dropout=0.1,
-            batch_first=True
-        )
-        
-        # Normalização e projeção
-        self.norm1 = nn.LayerNorm(self.hidden_dim)
-        self.norm2 = nn.LayerNorm(self.hidden_dim)
-        self.ffn = nn.Sequential(
-            nn.Linear(self.hidden_dim, self.hidden_dim * 4),
-            nn.GELU(),
-            nn.Linear(self.hidden_dim * 4, self.hidden_dim)
+        # Projeção simples para estabilidade
+        self.proj = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.LayerNorm(self.hidden_dim)
         )
         
         # Gate aprendível para controlar influência
-        self._gate = nn.Parameter(torch.tensor(-1.5))
+        self._gate = nn.Parameter(torch.tensor(-1.0))  # Menos negativo = mais influência
     
-    def forward(self, visual_tokens, num_images):
+    def forward(self, num_images):
         """
-        Comprime tokens visuais em registros compactos usando atenção.
+        Retorna registros simples para o número de imagens.
         
         Args:
-            visual_tokens: Tokens visuais [num_images, num_visual_tokens, hidden_dim]
             num_images (int): Número de imagens
             
         Returns:
-            torch.Tensor: Registros comprimidos [num_images, num_registers, hidden_dim]
+            torch.Tensor: Registros [num_images, num_registers, hidden_dim]
         """
-        batch_size = visual_tokens.size(0)
+        # Expandir registros para o número de imagens
+        registers = self.registers.expand(num_images, -1, -1)  # [num_images, num_registers, hidden_dim]
         
-        # Expandir registros para o batch
-        registers = self.registers.expand(batch_size, -1, -1)  # [B, num_registers, hidden_dim]
-        
-        # Aplicar atenção: registros "atendem" aos tokens visuais
-        # Query: registros, Key/Value: tokens visuais
-        attended_registers, _ = self.attention(
-            query=registers,  # [B, num_registers, hidden_dim]
-            key=visual_tokens,  # [B, num_visual_tokens, hidden_dim]
-            value=visual_tokens  # [B, num_visual_tokens, hidden_dim]
-        )
-        
-        # Residual connection + layer norm
-        registers = self.norm1(registers + attended_registers)
-        
-        # FFN
-        ffn_out = self.ffn(registers)
-        registers = self.norm2(registers + ffn_out)
+        # Aplicar projeção simples
+        registers = self.proj(registers)
         
         # Gate para controlar influência
         gate = torch.sigmoid(self._gate)
