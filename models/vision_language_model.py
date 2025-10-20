@@ -139,6 +139,17 @@ class VisionLanguageModel(nn.Module):
             h, _ = self.decoder.forward_blocks(h, cos_short, sin_short, attn_mask_short, kv_cache, k, None)
             logits = self.decoder.norm(h)
             
+            if targets is not None:
+                targets_cut = []
+                for b in range(B):
+                    pos = first_img_pos[b].item()
+                    targets_cut.append(torch.cat([
+                        targets[b, :pos],
+                        targets[b, pos+N_v:pos+N_v+R],
+                        targets[b, pos+N_v+R:]
+                    ], dim=0))
+                targets = torch.stack(targets_cut, dim=0)
+            
         elif images_tensor is not None:
             image_embd = self.vision_encoder(images_tensor)
             image_embd = self.MP(image_embd)
