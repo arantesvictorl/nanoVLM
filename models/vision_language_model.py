@@ -143,10 +143,11 @@ class VisionLanguageModel(nn.Module):
                 targets_cut = []
                 for b in range(B):
                     pos = first_img_pos[b].item()
+                    ignore_tokens = torch.full((R,), -100, device=targets.device, dtype=targets.dtype)
                     targets_cut.append(torch.cat([
                         targets[b, :pos],
-                        targets[b, pos+N_v:pos+N_v+R],
-                        targets[b, pos+N_v+R:]
+                        ignore_tokens,
+                        targets[b, pos+N_v:]
                     ], dim=0))
                 targets = torch.stack(targets_cut, dim=0)
             
