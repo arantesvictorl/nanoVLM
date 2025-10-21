@@ -38,11 +38,10 @@ class VLMConfig:
     mp_image_token_length: int = 64
 
     use_victor: bool = True
-    num_registers: int = 8
-    k_fuse_layers: int = 3
-    freeze_llm_steps: int = 2000
-    lr_projector: float = 2e-4
-
+    num_registers: int = 16        # Dobrar (1024 patches → 16 registers = 64:1)
+    k_fuse_layers: int = 4         # Mais tempo de fusão
+    freeze_llm_steps: int = 500    # Descongelar mais cedo (10% do treino)
+    lr_projector: float = 1e-4     # Mais conservador
     max_img_size: int = 2048
     resize_to_max_side_len: bool = True
 
