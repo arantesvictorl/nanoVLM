@@ -38,10 +38,10 @@ class VLMConfig:
     mp_image_token_length: int = 64
 
     use_victor: bool = True
-    num_registers: int = 16        # Dobrar (1024 patches → 16 registers = 64:1)
-    k_fuse_layers: int = 4         # Mais tempo de fusão
-    freeze_llm_steps: int = 500    # Descongelar mais cedo (10% do treino)
-    lr_projector: float = 1e-4     # Mais conservador
+    num_registers: int = 32
+    k_fuse_layers: int = 6
+    freeze_llm_steps: int = 1000
+    lr_projector: float = 1e-4
     max_img_size: int = 2048
     resize_to_max_side_len: bool = True
 
@@ -72,7 +72,7 @@ class TrainConfig:
     eval_in_epochs: bool = True
     eval_interval: int = 500
     stats_log_interval: int = 100
-    max_training_steps: int = 500
+    max_training_steps: int = 8600
     max_images_per_example: int = 8
     max_images_per_knapsack: int = 36
     max_sample_length: int = 8192
