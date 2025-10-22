@@ -33,6 +33,12 @@ class VisionLanguageModel(nn.Module):
         self.load_backbone = load_backbone
         self.tokenizer = get_tokenizer(cfg.lm_tokenizer, cfg.vlm_extra_tokens, cfg.lm_chat_template)
 
+        if cfg.use_victor:
+            self.visual_registers = nn.Parameter(
+                torch.randn(1, cfg.num_visual_registers, cfg.lm_hidden_dim)
+            )
+            nn.init.normal_(self.visual_registers, std=0.02)
+
     def _replace_img_tokens_with_embd(self, input_ids, token_embd, image_embd):
         """
         Replace every image-token placeholder in `input_ids` with the corresponding slice
@@ -65,10 +71,16 @@ class VisionLanguageModel(nn.Module):
 
         if images_tensor is not None:
             image_embd = self.vision_encoder(images_tensor)
-            image_embd = self.MP(image_embd)  # [num_images, mp_image_token_length, D_lm]
+            image_embd = self.MP(image_embd)
+            
+            if self.cfg.use_victor:
+                batch_size = image_embd.size(0)
+                registers = self.visual_registers.expand(batch_size, -1, -1)
+                image_embd = torch.cat([image_embd, registers], dim=1)
+            
             token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
 
-        logits, _ = self.decoder(token_embd, attention_mask=attention_mask)
+        logits, _ = self.decoder(token_embd, attention_mask=attention_mask, drop_visual_at_layer=self.cfg.drop_visual_tokens_at_layer if self.cfg.use_victor else None)
 
         loss = None
         if targets is not None:
@@ -85,21 +97,25 @@ class VisionLanguageModel(nn.Module):
         token_embd = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
 
         if images_tensor is not None:
-            # 1. Process image if present
-            image_embd = self.vision_encoder(images_tensor) # [B, T_img_feat, D_model]
-            image_embd = self.MP(image_embd)      # [B, mp_image_token_length, D_lm]
-            # 2. Combine image and text embeddings
+            image_embd = self.vision_encoder(images_tensor)
+            image_embd = self.MP(image_embd)
+            
+            if self.cfg.use_victor:
+                batch_size = image_embd.size(0)
+                registers = self.visual_registers.expand(batch_size, -1, -1)
+                image_embd = torch.cat([image_embd, registers], dim=1)
+            
             token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
 
         current_total_seq_len = token_embd.size(1)
-        batch_size = input_ids.size(0) # Or token_embd.size(0)
+        batch_size = input_ids.size(0)
         
-        # --- Multimodal Prefill Phase ---
         prefill_output, kv_cache_list = self.decoder(
             token_embd,
-            attention_mask=attention_mask, # Use the provided attention mask
+            attention_mask=attention_mask,
             kv_cache=None,
-            start_pos=0
+            start_pos=0,
+            drop_visual_at_layer=self.cfg.drop_visual_tokens_at_layer if self.cfg.use_victor else None
         )
         
         last_token_output_from_prefill = prefill_output[:, -1, :] 
