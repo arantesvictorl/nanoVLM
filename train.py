@@ -108,7 +108,8 @@ def get_run_name(train_cfg, vlm_cfg):
     mp = f"mp{vlm_cfg.mp_pixel_shuffle_factor}"
     llm = f"{vlm_cfg.lm_model_type.split('/')[-1]}"
 
-    return f"nanoVLM_{vit}_{mp}_{llm}_{num_gpus}_{dataset_size}_{batch_size}_{max_training_steps}_{learning_rate}_{date}"
+    victor_suffix = f"_victor{vlm_cfg.num_visual_registers}" if vlm_cfg.use_victor else ""
+    return f"nanoVLM_{vit}_{mp}_{llm}{victor_suffix}_{num_gpus}_{dataset_size}_{batch_size}_{max_training_steps}_{learning_rate}_{date}"
 
 def get_dataloaders(train_cfg, vlm_cfg):
     print(f"Getting dataloaders from {train_cfg.train_dataset_path}")
@@ -304,7 +305,8 @@ def train(train_cfg, vlm_cfg):
     else:
         for p in list(model.decoder.parameters()):
             p.requires_grad = False
-
+    if vlm_cfg.use_victor and train_cfg.lr_visual_registers > 0:
+        param_groups.append({'params': [model.visual_registers], 'lr': train_cfg.lr_visual_registers})
     optimizer = optim.AdamW(param_groups)
     all_params = [p for group in optimizer.param_groups for p in group['params']]
 
@@ -406,6 +408,11 @@ def train(train_cfg, vlm_cfg):
                 if train_cfg.lr_language_backbone > 0:
                     adj_lr_language_backbone = get_lr(global_step, train_cfg.lr_language_backbone, train_cfg.max_training_steps)
                     optimizer.param_groups[param_group_idx]['lr'] = adj_lr_language_backbone
+                    param_group_idx += 1
+                    
+                if vlm_cfg.use_victor and train_cfg.lr_visual_registers > 0:
+                    adj_lr_visual_registers = get_lr(global_step, train_cfg.lr_visual_registers, train_cfg.max_training_steps)
+                    optimizer.param_groups[param_group_idx]['lr'] = adj_lr_visual_registers
               
                 optimizer.step()
                 optimizer.zero_grad()
