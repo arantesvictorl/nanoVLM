@@ -416,7 +416,7 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0):
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0, drop_visual_at_layer: int=None):
         """
         Performs a forward pass through the language model.
 
@@ -433,6 +433,8 @@ class LanguageModel(nn.Module):
             start_pos (int, optional): The starting position index for the current input
                 sequence. Used to compute rotary positional embeddings correctly,
                 especially for cached sequences during generation. Default is 0.
+            drop_visual_at_layer (int, optional): Layer index at which to drop visual tokens (Victor).
+                If provided, visual tokens are removed after this layer, keeping only registers + text.
 
         Returns:
             Tuple:
@@ -468,8 +470,22 @@ class LanguageModel(nn.Module):
         if kv_cache is None:
             kv_cache = [None] * len(self.blocks)
 
+        num_visual_tokens = None
+        if drop_visual_at_layer is not None and start_pos == 0:
+            num_visual_tokens = T_curr - self.cfg.num_visual_registers
+
         for i, block in enumerate(self.blocks):
             x, kv_cache[i] = block(x, cos, sin, attention_mask, kv_cache[i])
+            
+            if drop_visual_at_layer is not None and i == drop_visual_at_layer and num_visual_tokens is not None:
+                x = torch.cat([x[:, :num_visual_tokens - (T_curr - self.cfg.num_visual_registers)], 
+                               x[:, num_visual_tokens:]], dim=1)
+                if attention_mask is not None:
+                    attention_mask = torch.cat([attention_mask[:, :num_visual_tokens - (T_curr - self.cfg.num_visual_registers)], 
+                                                attention_mask[:, num_visual_tokens:]], dim=1)
+                T_curr = x.size(1)
+                current_position_ids = torch.arange(start_pos, start_pos + T_curr, device=x.device).unsqueeze(0).expand(B, -1)
+                cos, sin = self.rotary_embd(current_position_ids)
 
         x = self.norm(x)
 
