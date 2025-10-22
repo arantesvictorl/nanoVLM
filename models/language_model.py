@@ -416,7 +416,7 @@ class LanguageModel(nn.Module):
         elif isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0, drop_visual_at_layer: int=None):
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor=None, kv_cache: list[dict]=None, start_pos: int=0, drop_visual_at_layer: int=None, visual_registers: torch.Tensor=None, num_images: int=0):
         """
         Performs a forward pass through the language model.
 
@@ -461,12 +461,40 @@ class LanguageModel(nn.Module):
 
         # T_curr is the length of the current input sequence
         B, T_curr, _ = x.size()
-        
-        # Create position_ids for the current sequence based on start_pos
-        current_position_ids = torch.arange(start_pos, start_pos + T_curr, device=x.device).unsqueeze(0).expand(B, -1)
-        cos, sin = self.rotary_embd(current_position_ids) # Get rotary position embeddings for current tokens
 
-        # Initialize new KV cache if none provided
+        # Victor: Inserir registros após os embeddings de entrada
+        num_visual_tokens_per_image = None
+        if visual_registers is not None and start_pos == 0 and num_images > 0:
+            # Calcular quantos tokens visuais temos
+            tokens_per_image = self.cfg.mp_image_token_length
+            num_visual_tokens_per_image = tokens_per_image * num_images
+            
+            # Expandir registros para o batch
+            registers = visual_registers.expand(B, -1, -1)
+            
+            # Inserir registros logo após os tokens visuais
+            # Assumindo que tokens visuais estão no início da sequência
+            if num_visual_tokens_per_image < T_curr:
+                x = torch.cat([
+                    x[:, :num_visual_tokens_per_image],  # Tokens visuais
+                    registers,                            # Registros Victor
+                    x[:, num_visual_tokens_per_image:]    # Tokens de texto
+                ], dim=1)
+                
+                # Ajustar attention mask
+                if attention_mask is not None:
+                    register_mask = torch.ones((B, registers.size(1)), device=attention_mask.device, dtype=attention_mask.dtype)
+                    attention_mask = torch.cat([
+                        attention_mask[:, :num_visual_tokens_per_image],
+                        register_mask,
+                        attention_mask[:, num_visual_tokens_per_image:]
+                    ], dim=1)
+                
+                T_curr = x.size(1)
+
+        current_position_ids = torch.arange(start_pos, start_pos + T_curr, device=x.device).unsqueeze(0).expand(B, -1)
+        cos, sin = self.rotary_embd(current_position_ids)
+
         if kv_cache is None:
             kv_cache = [None] * len(self.blocks)
 
@@ -477,12 +505,24 @@ class LanguageModel(nn.Module):
         for i, block in enumerate(self.blocks):
             x, kv_cache[i] = block(x, cos, sin, attention_mask, kv_cache[i])
             
-            if drop_visual_at_layer is not None and i == drop_visual_at_layer and num_visual_tokens is not None:
-                x = torch.cat([x[:, :num_visual_tokens - (T_curr - self.cfg.num_visual_registers)], 
-                               x[:, num_visual_tokens:]], dim=1)
+            # Victor: Remover tokens visuais na camada especificada
+            if drop_visual_at_layer is not None and i == drop_visual_at_layer and num_visual_tokens_per_image is not None:
+                # Remover apenas os tokens visuais, manter registros
+                num_registers = self.cfg.num_visual_registers
+                
+                # Nova sequência: registros + texto (sem tokens visuais)
+                x = torch.cat([
+                    x[:, num_visual_tokens_per_image:num_visual_tokens_per_image + num_registers],  # Registros
+                    x[:, num_visual_tokens_per_image + num_registers:]                              # Texto
+                ], dim=1)
+                
+                # Ajustar attention mask
                 if attention_mask is not None:
-                    attention_mask = torch.cat([attention_mask[:, :num_visual_tokens - (T_curr - self.cfg.num_visual_registers)], 
-                                                attention_mask[:, num_visual_tokens:]], dim=1)
+                    attention_mask = torch.cat([
+                        attention_mask[:, num_visual_tokens_per_image:num_visual_tokens_per_image + num_registers],
+                        attention_mask[:, num_visual_tokens_per_image + num_registers:]
+                    ], dim=1)
+                
                 T_curr = x.size(1)
                 current_position_ids = torch.arange(start_pos, start_pos + T_curr, device=x.device).unsqueeze(0).expand(B, -1)
                 cos, sin = self.rotary_embd(current_position_ids)

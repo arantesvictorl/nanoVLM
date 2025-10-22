@@ -72,21 +72,23 @@ class VisionLanguageModel(nn.Module):
         if images_tensor is not None:
             image_embd = self.vision_encoder(images_tensor)
             image_embd = self.MP(image_embd)
-            
-            if self.cfg.use_victor:
-                batch_size = image_embd.size(0)
-                registers = self.visual_registers.expand(batch_size, -1, -1)
-                image_embd = torch.cat([image_embd, registers], dim=1)
-            
             token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
 
-        logits, _ = self.decoder(token_embd, attention_mask=attention_mask, drop_visual_at_layer=self.cfg.drop_visual_tokens_at_layer if self.cfg.use_victor else None)
+        # Passar registros e info para o decoder
+        visual_registers = self.visual_registers if self.cfg.use_victor else None
+        num_images = images_tensor.size(0) if images_tensor is not None else 0
+        
+        logits, _ = self.decoder(
+            token_embd, 
+            attention_mask=attention_mask, 
+            drop_visual_at_layer=self.cfg.drop_visual_tokens_at_layer if self.cfg.use_victor else None,
+            visual_registers=visual_registers,
+            num_images=num_images
+        )
 
         loss = None
         if targets is not None:
-            logits = self.decoder.head(logits) # Apply LM head
-            # Loss is calculated over all tokens, but `targets` (labels) will have -100 for non-answer tokens.
-            # No need to slice logits based on image embedding size here, as the target mask handles it.
+            logits = self.decoder.head(logits)
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
 
         return logits, loss
@@ -94,28 +96,27 @@ class VisionLanguageModel(nn.Module):
     @torch.inference_mode()
     def generate(self, input_ids, images, attention_mask=None, max_new_tokens=5, top_k=50, top_p=0.9, temperature=0.5, greedy=False):
         images_tensor = self._process_images(images, input_ids.device)
-        token_embd = self.decoder.token_embedding(input_ids) # [B, T_prompt_text, D_lm]
+        token_embd = self.decoder.token_embedding(input_ids)
 
         if images_tensor is not None:
             image_embd = self.vision_encoder(images_tensor)
             image_embd = self.MP(image_embd)
-            
-            if self.cfg.use_victor:
-                batch_size = image_embd.size(0)
-                registers = self.visual_registers.expand(batch_size, -1, -1)
-                image_embd = torch.cat([image_embd, registers], dim=1)
-            
             token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
 
         current_total_seq_len = token_embd.size(1)
         batch_size = input_ids.size(0)
+        
+        visual_registers = self.visual_registers if self.cfg.use_victor else None
+        num_images = images_tensor.size(0) if images_tensor is not None else 0
         
         prefill_output, kv_cache_list = self.decoder(
             token_embd,
             attention_mask=attention_mask,
             kv_cache=None,
             start_pos=0,
-            drop_visual_at_layer=self.cfg.drop_visual_tokens_at_layer if self.cfg.use_victor else None
+            drop_visual_at_layer=self.cfg.drop_visual_tokens_at_layer if self.cfg.use_victor else None,
+            visual_registers=visual_registers,
+            num_images=num_images
         )
         
         last_token_output_from_prefill = prefill_output[:, -1, :] 
