@@ -53,12 +53,16 @@ class VLMConfig:
     vlm_checkpoint_path: str = 'checkpoints'
     hf_repo_name: str = 'nanoVLM'
 
+    use_victor: bool = True
+    num_visual_registers: int = 64
+    drop_visual_tokens_at_layer: int = 6
 
 @dataclass
 class TrainConfig:
     lr_mp: float = 0.00512
     lr_vision_backbone: float = 5e-5 #0.0005 #
     lr_language_backbone: float = 5e-5 #0
+    lr_visual_registers: float = 0.00512
     data_cutoff_idx: int = None
     val_ratio: float = 0.005
     batch_size: int = 1
