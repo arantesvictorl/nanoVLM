@@ -69,10 +69,12 @@ class VisionLanguageModel(nn.Module):
         images_tensor = self._process_images(images, input_ids.device)
         token_embd = self.decoder.token_embedding(input_ids) # [B, T_sequence, D_lm]
 
+        num_visual_tokens = 0
         if images_tensor is not None:
             image_embd = self.vision_encoder(images_tensor)
             image_embd = self.MP(image_embd)
             token_embd = self._replace_img_tokens_with_embd(input_ids, token_embd, image_embd)
+            num_visual_tokens = images_tensor.size(0) * self.cfg.mp_image_token_length
 
         # Passar registros e info para o decoder
         visual_registers = self.visual_registers if self.cfg.use_victor else None
@@ -88,6 +90,16 @@ class VisionLanguageModel(nn.Module):
 
         loss = None
         if targets is not None:
+            # Victor: Ajustar targets se registros foram adicionados
+            if self.cfg.use_victor and num_visual_tokens > 0:
+                B = targets.size(0)
+                register_padding = torch.full((B, self.cfg.num_visual_registers), -100, dtype=targets.dtype, device=targets.device)
+                targets = torch.cat([
+                    targets[:, :num_visual_tokens],
+                    register_padding,
+                    targets[:, num_visual_tokens:]
+                ], dim=1)
+            
             logits = self.decoder.head(logits)
             loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
 
